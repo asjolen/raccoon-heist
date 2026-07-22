@@ -1,0 +1,10 @@
+# OS junk
+.DS_Store
+
+# Synty store archives — 121-228 MB each, over GitHub's 100 MB hard limit.
+# The imported assets are versioned inside the Unity project (Assets/Synty);
+# the archives themselves are re-downloadable from the Synty account.
+*.unitypackage
+
+# Generated measurement report
+SyntyReport.txt
