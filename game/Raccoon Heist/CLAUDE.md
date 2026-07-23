@@ -16,7 +16,8 @@ Tone: chaotic, physical, clip-worthy. Failure is funnier than success.
 
 1. Rounds start **outside**, at the den in the back alley. Case the joint, pick an
    entry. Entries are a menu of tradeoffs (speed / noise / what fits through):
-   the floor vent (quiet, slow, small loot), the pet flap (opens from inside only),
+   the floor vent (quiet, slow, small loot), the centered front door (openable from
+   either side, but opening it from the street trips the alarm), the pet flap (opens from inside only),
    a creaky back window into the storage room (unlock from inside first), and a
    roof skylight (one-way drop in — never an exit).
 2. A randomized **shopping list** demands specific items (some fragile, some heavy
@@ -32,8 +33,9 @@ Tone: chaotic, physical, clip-worthy. Failure is funnier than success.
    (flashlight) → rampage**. His snore is the all-clear signal; silence is terror.
 6. Caught raccoons are grabbed and hurled across the street **into the bins**
    (lid clatter tells the whole team). The long walk back is the punishment; a
-   teammate opening the pet flap from inside is the fast rescue. Solo play stays
-   viable — re-entry is a time cost, never a lockout.
+   teammate opening the pet flap or the centered front door from inside is the fast
+   rescue. Opening the front door from the street works but trips the alarm. Solo play
+   stays viable — re-entry is a time cost, never a lockout.
 7. Dawn is the timer: the shop gradually brightens, and at 06:00 Harold's alarm
    rings and he gets up for good.
 8. Surplus loot buys den upgrades between nights. Lists grow greedier each night.
@@ -83,17 +85,29 @@ Tone: chaotic, physical, clip-worthy. Failure is funnier than success.
 - Vent entry at floor level near the front-east corner; counter + register near
   the front; Harold's cot in the back room. The **scoring hole** is in the back
   room's floorboards near the cot (raccoon-sized — divable, loudly).
-- Outside: kept small — one street face (bright, exposed, streetlamp), a side
-  passage with the vent, and a back alley (dark, cluttered: dumpster, pallets,
-  bins). The **den** is in the alley (hole under a fence/dumpster) — spawn point,
-  loot delivery target, and upgrade shop. Outside verticality follows the same
-  <= 1 m jump-step rule: crates -> dumpster -> window sill -> roof. Yeeted
-  raccoons land in the bins across the street.
+- The **playable** outside stays small: one street face (bright, exposed,
+  streetlamp), an east side passage with the vent, and a back alley (dark,
+  cluttered: dumpster, pallets, bins). The **den** is in the alley (hole under a
+  fence/dumpster) — spawn point, loot delivery target, and upgrade shop. Outside
+  verticality follows the same <= 1 m jump-step rule: crates -> dumpster -> AC ->
+  window sill -> roof. Yeeted raccoons land in the bins across the street.
+- The **visual** city is larger than the playable footprint. Roads, sidewalks,
+  parked traffic, lamps, and occupied buildings continue around all four sides of
+  the block beyond readable fences/roadworks. This sells a real city block without
+  adding dead traversal or lengthening the walk back after a yeet.
+- The storefront entrance is centered on the fourteen-metre facade with balanced
+  display glazing on both sides. The front reads as one address: one continuous
+  fascia/frame fitted to the real openings, not several overlapping modular shop
+  prefabs. One shallow entrance canopy may project over the flush hinged door;
+  awnings, posts, cameras, and posters must not cross glazing or obscure signage.
 
 ## Art & audio direction
 
 - Low-poly, flat-shaded, chunky proportions, muted warm palette. Dark shop lit by
-  moonlight through the window + Harold's flashlight cone. Lighting is the star.
+  cold moonlight, isolated warm street/alley pools, window glow, and Harold's
+  flashlight cone. Damp roads, blue urban distance fog, low ground haze, sourced
+  steam, and strong foreground-to-skyline value separation provide depth. Lighting
+  is the star, but the exposure must remain stable across edit and play mode.
 - Characters ~5–20k tris, props ~200–2k tris. Unlit/simple-lit materials, no PBR.
 - Audio is gameplay: every Harold state and world event has a directional,
   in-world sound identity. Debug text is scaffolding only — every string gets

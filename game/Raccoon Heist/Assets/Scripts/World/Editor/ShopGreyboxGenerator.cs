@@ -6,6 +6,7 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using RaccoonHeist.Player;
+using RaccoonHeist.World;
 
 namespace RaccoonHeist.World.Editor
 {
@@ -17,6 +18,8 @@ namespace RaccoonHeist.World.Editor
         const float D = ShopConstants.ShopDepth;      // z, front wall at z = 0
         const float H = ShopConstants.CeilingHeight;
         const float T = ShopConstants.WallThickness;
+        const float EntranceX = W * 0.5f;
+        const float EntranceWidth = 1.2f;
 
         // Storage room interior sits behind the rear wall on the east side
         const float StorageX0 = 5f;
@@ -36,6 +39,7 @@ namespace RaccoonHeist.World.Editor
             }
 
             matCache.Clear();
+            syntyCache.Clear();
             DeleteIfExists("ShopGreybox");
             DeleteIfExists("Raccoon");
             DisableTemplateObjects();
@@ -53,14 +57,282 @@ namespace RaccoonHeist.World.Editor
             BuildOutside();
             BuildBackdrop();
             BuildLighting();
+            BuildShopAlarm();
+            BuildEnvironmentAudio();
             BuildRaccoon();
+            ValidateVehicleBuildingClearance();
+            ValidateBackdropPropBuildingClearance();
+            ValidateNeighbourFrontageClearance();
 
             foreach (Transform child in root)
-                if (!child.name.StartsWith("Harold") && child.GetComponent<Rigidbody>() == null)
+                if (!child.name.StartsWith("Harold") && child.GetComponent<Rigidbody>() == null
+                    && child.GetComponent<HingedDoor>() == null
+                    && child.GetComponent<ShopAlarmController>() == null)
                     child.gameObject.isStatic = true;
 
             EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             Debug.Log("Raccoon Heist: shop greybox generated. Press Play and sneak around.");
+        }
+
+        // Command-line/editor automation entry point. The normal menu command leaves
+        // saving in the designer's hands; this explicit method is used by validation
+        // runs that need the generated world persisted to the project scene.
+        public static void GenerateAndSave()
+        {
+            var scene = EditorSceneManager.OpenScene("Assets/Scenes/SampleScene.unity", OpenSceneMode.Single);
+            Generate();
+            EditorSceneManager.SaveScene(scene);
+            AssetDatabase.SaveAssets();
+            Debug.Log("Raccoon Heist: generated and saved Assets/Scenes/SampleScene.unity.");
+        }
+
+        // Single entry point for unattended validation: build the saved scene and
+        // render every route plus dedicated street-ring review angles.
+        public static void GenerateSaveAndCapture()
+        {
+            GenerateAndSave();
+            CaptureEnvironmentPreviews();
+        }
+
+        [MenuItem("Raccoon Heist/Capture Environment Previews")]
+        public static void CaptureEnvironmentPreviews()
+        {
+            var sceneRoot = GameObject.Find("ShopGreybox");
+            if (sceneRoot == null)
+            {
+                Debug.LogWarning("Raccoon Heist: generate the shop before capturing environment previews.");
+                return;
+            }
+
+            var raccoon = GameObject.Find("Raccoon");
+            bool raccoonWasActive = raccoon != null && raccoon.activeSelf;
+            if (raccoonWasActive) raccoon.SetActive(false);
+            try
+            {
+                // Editor cameras do not advance particle systems on their own. Seed
+                // only the broad ground haze: fast-forwarding the focused vent steam
+                // turns its short plume into an oversized column in static previews.
+                foreach (var particles in Object.FindObjectsByType<ParticleSystem>())
+                {
+                    if (!particles.name.Contains("GroundHaze")) continue;
+                    particles.Simulate(6f, true, true, true);
+                    particles.Play(true);
+                }
+                CapturePreview("Street", new Vector3(7f, 0.72f, -10.85f), new Vector3(7f, 1.15f, 2.5f));
+                CapturePreview("Storefront", new Vector3(10.8f, 0.82f, -6.2f), new Vector3(6.8f, 1.15f, -0.05f));
+                CapturePreview("Entrance", new Vector3(EntranceX, 0.68f, -2.8f), new Vector3(EntranceX, 1.02f, -0.05f));
+                CapturePreview("NeighbourFrontage", new Vector3(-3f, 3.15f, -4.2f), new Vector3(-3f, 1.35f, -0.05f));
+                CapturePreview("MainStreet", new Vector3(-10f, 6.5f, -7f), new Vector3(18f, 0.7f, -7f));
+                var alarm = sceneRoot.GetComponentInChildren<ShopAlarmController>(true);
+                if (alarm != null)
+                {
+                    alarm.TriggerAlarm();
+                    CapturePreview("AlarmInterior", new Vector3(1.2f, 2.05f, 1.3f), new Vector3(7.4f, 2.42f, 9.5f));
+                    alarm.ResetAlarm();
+                }
+                CapturePreview("Passage", new Vector3(15.15f, 0.75f, 12.1f), new Vector3(15.65f, 1.05f, 5.2f));
+                CapturePreview("Alley", new Vector3(11.7f, 0.82f, 25f), new Vector3(8.2f, 1.2f, 19.7f));
+                CapturePreview("WestStreet", new Vector3(-1.2f, 8f, -18f), new Vector3(-10.5f, 0.8f, 9f));
+                CapturePreview("EastStreet", new Vector3(15.2f, 7.5f, -3.5f), new Vector3(24.5f, 0.8f, 9f));
+                CapturePreview("RearStreet", new Vector3(7f, 7.5f, 18f), new Vector3(7f, 0.8f, 30f));
+                CapturePreview("WestOppositeWalk", new Vector3(-10.5f, 1.25f, 8f), new Vector3(-17.5f, 1.1f, 8f));
+                CapturePreview("EastOppositeWalk", new Vector3(24.5f, 1.25f, 10.5f), new Vector3(31.5f, 1.1f, 10.5f));
+                CapturePreview("RearOppositeWalk", new Vector3(7f, 1.25f, 30.5f), new Vector3(7f, 1.1f, 37.5f));
+                CapturePreview("Block", new Vector3(32f, 27f, -22f), new Vector3(7f, 0.8f, 10f));
+            }
+            finally
+            {
+                if (raccoonWasActive) raccoon.SetActive(true);
+            }
+            Debug.Log("Raccoon Heist: captured environment previews to /tmp/RaccoonHeist_*.png.");
+        }
+
+        static void CapturePreview(string name, Vector3 position, Vector3 target)
+        {
+            var holder = new GameObject($"PreviewCamera_{name}");
+            var camera = holder.AddComponent<Camera>();
+            holder.transform.SetPositionAndRotation(position, Quaternion.LookRotation(target - position));
+            camera.clearFlags = CameraClearFlags.Skybox;
+            camera.fieldOfView = name == "Block" ? 54f : 68f;
+            camera.nearClipPlane = 0.05f;
+            camera.farClipPlane = 180f;
+            camera.allowHDR = true;
+            var cameraData = camera.GetUniversalAdditionalCameraData();
+            cameraData.renderPostProcessing = true;
+            cameraData.antialiasing = AntialiasingMode.FastApproximateAntialiasing;
+
+            var targetTexture = RenderTexture.GetTemporary(1600, 900, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            camera.targetTexture = targetTexture;
+            camera.Render();
+            var previous = RenderTexture.active;
+            RenderTexture.active = targetTexture;
+            var image = new Texture2D(1600, 900, TextureFormat.RGBA32, false);
+            image.ReadPixels(new Rect(0f, 0f, 1600f, 900f), 0, 0);
+            image.Apply();
+            System.IO.File.WriteAllBytes($"/tmp/RaccoonHeist_{name}.png", image.EncodeToPNG());
+            RenderTexture.active = previous;
+            camera.targetTexture = null;
+            RenderTexture.ReleaseTemporary(targetTexture);
+            Object.DestroyImmediate(image);
+            Object.DestroyImmediate(holder);
+        }
+
+        static void ValidateVehicleBuildingClearance()
+        {
+            var vehicles = new List<GameObject>();
+            var buildings = new List<GameObject>();
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == root) continue;
+                bool directEnvironmentChild = candidate.parent == root || candidate.parent.name == "Backdrop";
+                if (!directEnvironmentChild) continue;
+
+                string name = candidate.name;
+                if (name.StartsWith("SM_Veh_"))
+                    vehicles.Add(candidate.gameObject);
+                else if (name == "NeighbourBuilding" || name.StartsWith("BackdropBld_")
+                         || name.StartsWith("SM_Bld_Shop_") || name.StartsWith("SM_Bld_Apartment_")
+                         || name.StartsWith("SM_Bld_Station_"))
+                    buildings.Add(candidate.gameObject);
+            }
+
+            int overlaps = 0;
+            foreach (var vehicle in vehicles)
+            {
+                var vehicleBounds = GeometryBounds(vehicle);
+                if (vehicleBounds.size == Vector3.zero) continue;
+                foreach (var building in buildings)
+                {
+                    var buildingBounds = GeometryBounds(building);
+                    if (buildingBounds.size == Vector3.zero || !vehicleBounds.Intersects(buildingBounds)) continue;
+                    overlaps++;
+                    Debug.LogWarning($"Environment overlap: vehicle '{vehicle.name}' intersects building '{building.name}'.");
+                }
+            }
+
+            if (overlaps == 0)
+                Debug.Log($"Raccoon Heist: vehicle/building clearance check passed ({vehicles.Count} vehicles, {buildings.Count} buildings).");
+        }
+
+        static void ValidateBackdropPropBuildingClearance()
+        {
+            var backdrop = root.Find("Backdrop");
+            if (backdrop == null) return;
+            var props = new List<GameObject>();
+            var buildings = new List<GameObject>();
+            foreach (Transform candidate in backdrop)
+            {
+                if (candidate.name.StartsWith("SM_Prop_") || candidate.name.Contains("FarLamp_"))
+                    props.Add(candidate.gameObject);
+                else if (candidate.name.StartsWith("SM_Bld_") || candidate.name.StartsWith("BackdropBld_"))
+                    buildings.Add(candidate.gameObject);
+            }
+
+            int overlaps = 0;
+            foreach (var prop in props)
+            {
+                var propBounds = GeometryBounds(prop);
+                if (propBounds.size == Vector3.zero) continue;
+                foreach (var building in buildings)
+                {
+                    var buildingBounds = GeometryBounds(building);
+                    if (buildingBounds.size == Vector3.zero || !propBounds.Intersects(buildingBounds)) continue;
+                    overlaps++;
+                    Debug.LogWarning($"Environment overlap: prop '{prop.name}' at {prop.transform.position} intersects building '{building.name}'.");
+                }
+            }
+
+            if (overlaps == 0)
+                Debug.Log($"Raccoon Heist: backdrop prop/building clearance check passed ({props.Count} props, {buildings.Count} buildings).");
+        }
+
+        static void ValidateNeighbourFrontageClearance()
+        {
+            var shutterObject = root.Find("NeighbourClosedShutter")?.gameObject;
+            if (shutterObject == null) return;
+
+            int problems = 0;
+            foreach (Transform candidate in root)
+            {
+                if (!candidate.name.StartsWith("NeighbourShutter") && !candidate.name.StartsWith("NeighbourShopSign")) continue;
+                var bounds = GeometryBounds(candidate.gameObject);
+                if (bounds.min.x >= OutW0 && bounds.max.x <= -0.2f) continue;
+                problems++;
+                Debug.LogWarning($"Neighbour frontage overflow: '{candidate.name}' spans x {bounds.min.x:0.00}..{bounds.max.x:0.00} outside wall {OutW0:0.00}..-0.20.");
+            }
+
+            var shutterBounds = GeometryBounds(shutterObject);
+            var clearApron = new Bounds(
+                new Vector3(shutterBounds.center.x, 1.35f, -0.48f),
+                new Vector3(shutterBounds.size.x, 2.7f, 0.90f));
+            foreach (Transform candidate in root)
+            {
+                if (!candidate.name.StartsWith("SM_Prop_")) continue;
+                var bounds = GeometryBounds(candidate.gameObject);
+                if (bounds.size == Vector3.zero || !clearApron.Intersects(bounds)) continue;
+                problems++;
+                Debug.LogWarning($"Neighbour frontage obstruction: prop '{candidate.name}' at {candidate.position} enters the shutter apron.");
+            }
+
+            if (problems == 0)
+                Debug.Log("Raccoon Heist: neighbour frontage bounds/apron clearance check passed.");
+        }
+
+        // Agents cannot safely launch a second Unity process while the project is
+        // already open. Dropping the project-root marker lets the live editor perform
+        // one requested generation after its next domain reload, then removes it.
+        [InitializeOnLoadMethod]
+        static void RunRequestedGeneration()
+        {
+            string marker = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.dataPath)!, "RegenerateEnvironment.once");
+            if (!System.IO.File.Exists(marker)) return;
+            EditorApplication.delayCall += () =>
+            {
+                if (EditorApplication.isPlayingOrWillChangePlaymode)
+                {
+                    Debug.LogWarning("Raccoon Heist: environment regeneration is waiting for Edit mode.");
+                    EditorApplication.playModeStateChanged -= RunWhenEditMode;
+                    EditorApplication.playModeStateChanged += RunWhenEditMode;
+                    return;
+                }
+
+                try
+                {
+                    GenerateAndSave();
+                    CaptureEnvironmentPreviews();
+                    System.IO.File.Delete(marker);
+                }
+                catch (System.Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            };
+        }
+
+        static void RunWhenEditMode(PlayModeStateChange state)
+        {
+            if (state != PlayModeStateChange.EnteredEditMode) return;
+            EditorApplication.playModeStateChanged -= RunWhenEditMode;
+            RunRequestedGeneration();
+        }
+
+        [InitializeOnLoadMethod]
+        static void RunRequestedCapture()
+        {
+            string marker = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.dataPath)!, "CaptureEnvironment.once");
+            if (!System.IO.File.Exists(marker)) return;
+            EditorApplication.delayCall += () =>
+            {
+                try
+                {
+                    CaptureEnvironmentPreviews();
+                    System.IO.File.Delete(marker);
+                }
+                catch (System.Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            };
         }
 
         // ---------- materials (created once as assets, palette lives here) ----------
@@ -83,19 +355,45 @@ namespace RaccoonHeist.World.Editor
             return mat;
         }
 
+        static Material EmissiveMat(string name, Color baseColor, Color emission)
+        {
+            var mat = Mat(name, baseColor, 0.22f);
+            mat.EnableKeyword("_EMISSION");
+            mat.SetColor("_EmissionColor", emission);
+            mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            return mat;
+        }
+
+        static Material TransparentMat(string name, Color color, float smoothness = 0.72f)
+        {
+            var mat = Mat(name, color, smoothness);
+            mat.SetOverrideTag("RenderType", "Transparent");
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            mat.SetFloat("_AlphaClip", 0f);
+            mat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            mat.SetInt("_ZWrite", 0);
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.DisableKeyword("_ALPHATEST_ON");
+            mat.renderQueue = (int)RenderQueue.Transparent;
+            return mat;
+        }
+
         static Material Wall => Mat("Wall", new Color(0.42f, 0.40f, 0.36f));
         static Material Wood => Mat("ShelfWood", new Color(0.42f, 0.31f, 0.21f));
         static Material Crate => Mat("Crate", new Color(0.55f, 0.42f, 0.28f));
 
         // ---------- procedural textures (generated once as PNG assets) ----------
 
-        static Material TiledMat(string name, Color tint, Texture2D tex, float tileX, float tileY)
+        static Material TiledMat(string name, Color tint, Texture2D tex, float tileX, float tileY, float smoothness = 0.08f)
         {
             string key = $"{name}_{Mathf.RoundToInt(tileX)}x{Mathf.RoundToInt(tileY)}";
             if (matCache.TryGetValue(key, out var cached)) return cached;
-            var mat = Mat(key, tint);
+            var mat = Mat(key, tint, smoothness);
             mat.SetTexture("_BaseMap", tex);
             mat.SetTextureScale("_BaseMap", new Vector2(tileX, tileY));
+            mat.SetFloat("_Smoothness", smoothness);
             return mat;
         }
 
@@ -184,7 +482,7 @@ namespace RaccoonHeist.World.Editor
 
         // Outdoor compound bounds (perimeter walls sit just outside these)
         const float OutW0 = -5f, OutW1 = W + 5f;   // x range
-        const float OutD0 = -8f, OutD1 = 25f;       // z range: street | shop block | alley
+        const float OutD0 = -14f, OutD1 = 25f;      // z range: two-lane street | shop block | alley
 
         static void BuildGroundAndCeilings()
         {
@@ -195,20 +493,44 @@ namespace RaccoonHeist.World.Editor
             // Road has painted markings; pavements are raised 0.12 m with curb faces
             // (hop-able: raccoon step offset handles it).
             bool cityRoads = SyntyPrefab("SM_Env_Road_Lines_01") != null;
-            BoxMinMax("Road", new Vector3(-40f, 0f, -7f), new Vector3(W + 40f, 0.02f, -2f), null,
-                cityRoads ? TiledMat("Asphalt", new Color(0.42f, 0.42f, 0.47f), TexAsphalt, 42f, 2f)
-                          : TiledMat("RoadMarked", new Color(0.5f, 0.5f, 0.55f), TexRoad, 14f, 1f));
+            BoxMinMax("Road", new Vector3(-40f, 0f, -12f), new Vector3(W + 40f, 0.02f, -2f), null,
+                cityRoads ? TiledMat("AsphaltWet", new Color(0.30f, 0.32f, 0.38f), TexAsphalt, 42f, 2f, 0.42f)
+                          : TiledMat("RoadMarkedWet", new Color(0.38f, 0.40f, 0.46f), TexRoad, 14f, 1f, 0.42f));
             if (cityRoads)
                 for (float x0 = -40f; x0 < W + 40f; x0 += 5f)
                 {
                     bool crossing = Mathf.Approximately(x0, -10f) || Mathf.Approximately(x0, 15f);
-                    PlaceSynty(crossing ? "SM_Env_Road_Crossing_01" : "SM_Env_Road_Lines_01",
-                        new Vector3(x0 + 2.5f, 0.028f, -4.5f), 90f);
+                    foreach (float laneZ in new[] { -4.5f, -9.5f })
+                        PlaceSynty(crossing ? "SM_Env_Road_Crossing_01" : "SM_Env_Road_01",
+                            new Vector3(x0 + 2.5f, 0.028f, laneZ), 90f);
                 }
-            BoxMinMax("Pavement_Far", new Vector3(-40f, 0f, OutD0), new Vector3(W + 40f, 0.12f, -7f), null,
-                TiledMat("Slabs", new Color(0.55f, 0.55f, 0.56f), TexSlabs, 40f, 1f));
+
+            // A broken centre stripe makes the ten-metre surface unmistakably read
+            // as two opposing lanes even when the prefab markings are in shadow.
+            var roadStripe = Mat("RoadCentreStripe", new Color(0.64f, 0.60f, 0.43f), 0.18f);
+            int stripeIndex = 0;
+            for (float x0 = -39f; x0 < W + 40f; x0 += 6f)
+                BoxMinMax($"RoadCentreStripe_{stripeIndex++}", new Vector3(x0, 0.031f, -7.055f),
+                    new Vector3(x0 + 3.1f, 0.037f, -6.945f), null, roadStripe);
+
+            // The opposite pavement has a wall-side furniture verge beyond the
+            // playable limit, a clear walking strip, then curb-side lamp hardware.
+            BoxMinMax("Pavement_Far", new Vector3(-40f, 0f, OutD0 - 1.5f), new Vector3(W + 40f, 0.12f, -12f), null,
+                TiledMat("SlabsDamp", new Color(0.44f, 0.45f, 0.49f), TexSlabs, 40f, 1f, 0.22f));
             BoxMinMax("Pavement_Shop", new Vector3(-40f, 0f, -2f), new Vector3(W + 40f, 0.12f, 0f), null,
-                TiledMat("Slabs", new Color(0.55f, 0.55f, 0.56f), TexSlabs, 40f, 1f));
+                TiledMat("SlabsDamp", new Color(0.44f, 0.45f, 0.49f), TexSlabs, 40f, 1f, 0.22f));
+            // The service route is a narrow asphalt lane rather than one broad,
+            // stretched concrete plane. Matte outdoor concrete aprons hug the walls and
+            // a dark gutter separates them from the roadway, making every edge intentional.
+            var serviceAsphalt = TiledMat("ServiceAsphaltOutdoor", new Color(0.24f, 0.26f, 0.31f), TexAsphalt, 5f, 12f, 0.14f);
+            var perimeterSlabs = TiledMat("PerimeterConcreteOutdoor", new Color(0.34f, 0.35f, 0.38f), TexRough, 3f, 12f, 0.05f);
+            var serviceGutter = Mat("ServiceGutter", new Color(0.15f, 0.17f, 0.20f), 0.10f);
+            BoxMinMax("PassageAsphalt", new Vector3(W + T, 0.001f, 0f), new Vector3(OutW1, 0.017f, StorageZ1 + T), null, serviceAsphalt);
+            BoxMinMax("AlleyAsphalt", new Vector3(OutW0, 0.001f, StorageZ1 + T), new Vector3(OutW1, 0.017f, OutD1), null, serviceAsphalt);
+            BoxMinMax("EastWallApron", new Vector3(W + T, 0.018f, 0f), new Vector3(W + T + 1.15f, 0.075f, D + T), null, perimeterSlabs);
+            BoxMinMax("EastWallGutter", new Vector3(W + T + 1.15f, 0.018f, 0f), new Vector3(W + T + 1.33f, 0.045f, D + T), null, serviceGutter);
+            BoxMinMax("RearWallApron", new Vector3(OutW0, 0.018f, StorageZ1 + T), new Vector3(StorageX1, 0.075f, StorageZ1 + T + 1.05f), null, perimeterSlabs);
+            BoxMinMax("RearWallGutter", new Vector3(OutW0, 0.018f, StorageZ1 + T + 1.05f), new Vector3(StorageX1, 0.045f, StorageZ1 + T + 1.23f), null, serviceGutter);
             BoxMinMax("ShopFloor", new Vector3(0f, 0f, 0f), new Vector3(W, 0.02f, D), null,
                 TiledMat("Planks", new Color(0.62f, 0.50f, 0.38f), TexPlanks, 7f, 8f));
             BoxMinMax("BackRoomFloor", new Vector3(0f, 0f, D + T), new Vector3(3f, 0.02f, D + T + 4f), null,
@@ -235,19 +557,35 @@ namespace RaccoonHeist.World.Editor
 
         static void BuildFrontWall()
         {
-            // Front wall (z = 0 plane): door gap at x 1.5–2.5, big window from x 3.5 almost to the corner
-            BoxMinMax("FrontWall_Left", new Vector3(-T, 0f, -T), new Vector3(1.5f, H, 0f), null, Wall);
-            BoxMinMax("FrontWall_DoorHeader", new Vector3(1.5f, ShopConstants.DoorwayHeight, -T), new Vector3(2.5f, H, 0f), null, Wall);
-            BoxMinMax("FrontWall_Pillar", new Vector3(2.5f, 0f, -T), new Vector3(3.5f, H, 0f), null, Wall);
-            BoxMinMax("FrontWall_WindowSill", new Vector3(3.5f, 0f, -T), new Vector3(W - 0.5f, 0.9f, 0f), null, Wall);
-            BoxMinMax("FrontWall_WindowHeader", new Vector3(3.5f, 2.5f, -T), new Vector3(W - 0.5f, H, 0f), null, Wall);
-            BoxMinMax("FrontWall_Right", new Vector3(W - 0.5f, 0f, -T), new Vector3(W + T, H, 0f), null, Wall);
+            float doorMin = EntranceX - EntranceWidth * 0.5f;
+            float doorMax = EntranceX + EntranceWidth * 0.5f;
+            const float windowEdge = 0.5f;
+            const float jamb = 0.22f;
 
-            // Closed front door with the pet flap raccoons get let back in through
-            BoxMinMax("FrontDoor", new Vector3(1.55f, 0f, -0.15f), new Vector3(2.45f, ShopConstants.DoorwayHeight, -0.05f), null,
-                Mat("Door", new Color(0.33f, 0.22f, 0.13f)));
-            BoxMinMax("PetFlap", new Vector3(1.8f, 0.02f, -0.18f), new Vector3(2.2f, 0.35f, -0.02f), null,
-                Mat("PetFlap", new Color(0.62f, 0.56f, 0.45f)));
+            // A centered entrance gives the fourteen-metre facade a clear hierarchy:
+            // display window, door, display window. The real wall openings match the
+            // decorative facade rather than hiding a sealed wall behind it.
+            BoxMinMax("FrontWall_LeftEdge", new Vector3(-T, 0f, -T), new Vector3(windowEdge, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_LeftWindowSill", new Vector3(windowEdge, 0f, -T), new Vector3(doorMin - jamb, 0.9f, 0f), null, Wall);
+            BoxMinMax("FrontWall_LeftWindowHeader", new Vector3(windowEdge, 2.5f, -T), new Vector3(doorMin - jamb, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_LeftJamb", new Vector3(doorMin - jamb, 0f, -T), new Vector3(doorMin, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_DoorHeader", new Vector3(doorMin, ShopConstants.DoorwayHeight, -T), new Vector3(doorMax, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_RightJamb", new Vector3(doorMax, 0f, -T), new Vector3(doorMax + jamb, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_RightWindowSill", new Vector3(doorMax + jamb, 0f, -T), new Vector3(W - windowEdge, 0.9f, 0f), null, Wall);
+            BoxMinMax("FrontWall_RightWindowHeader", new Vector3(doorMax + jamb, 2.5f, -T), new Vector3(W - windowEdge, H, 0f), null, Wall);
+            BoxMinMax("FrontWall_RightEdge", new Vector3(W - windowEdge, 0f, -T), new Vector3(W + T, H, 0f), null, Wall);
+
+            // The panel and pet flap share a real hinge. The door opens from both sides;
+            // only a street-side opening is treated as a break-in by the shop alarm.
+            var pivot = new GameObject("EntranceDoorPivot").transform;
+            pivot.SetParent(root, false);
+            pivot.position = new Vector3(doorMin, 0f, -0.10f);
+            Box("FrontDoor", new Vector3(EntranceWidth * 0.5f, ShopConstants.DoorwayHeight * 0.5f, 0f),
+                new Vector3(EntranceWidth, ShopConstants.DoorwayHeight, 0.10f), pivot,
+                Mat("Door", new Color(0.22f, 0.25f, 0.29f), 0.18f));
+            Box("PetFlap", new Vector3(EntranceWidth * 0.5f, 0.185f, -0.07f), new Vector3(0.4f, 0.33f, 0.05f), pivot,
+                Mat("PetFlap", new Color(0.34f, 0.29f, 0.24f), 0.12f));
+            pivot.gameObject.AddComponent<HingedDoor>();
         }
 
         static void BuildSideAndRearWalls()
@@ -516,6 +854,29 @@ namespace RaccoonHeist.World.Editor
             return go;
         }
 
+        // Facade skins, puddles, posters, and other visual-only dressing must not
+        // accidentally seal a gameplay opening with PlaceSynty's fitted collider.
+        static GameObject PlaceSyntyDecorative(string name, Vector3 floorPos, float yaw = 0f)
+        {
+            var go = PlaceSynty(name, floorPos, yaw);
+            if (go == null) return null;
+            foreach (var collider in go.GetComponentsInChildren<Collider>())
+                Object.DestroyImmediate(collider);
+            return go;
+        }
+
+        // Particle-only prefabs have no mesh bounds to ground against. Instantiate
+        // them directly so steam/fog FX do not receive a zero-sized box collider.
+        static GameObject PlaceSyntyFx(string name, Vector3 position, float yaw = 0f, float scale = 1f)
+        {
+            var prefab = SyntyPrefab(name);
+            if (prefab == null) return null;
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, root);
+            go.transform.SetPositionAndRotation(position, Quaternion.Euler(0f, yaw, 0f));
+            go.transform.localScale = Vector3.one * scale;
+            return go;
+        }
+
         // Full pre-stocked market aisles, sized on the fly so any Synty footprint works
         static void BuildSyntyAisles()
         {
@@ -589,9 +950,10 @@ namespace RaccoonHeist.World.Editor
             for (float z = 4f; z < D - 3f; z += 3.6f)
                 BoxMinMax($"Beam_{z}", new Vector3(0f, 2.25f, z - 0.12f), new Vector3(W, 2.4f, z + 0.12f), null, beamMat);
 
-            // Crate steps by the front door (hide clutter + hop to the counter zone)
-            BoxMinMax("Crates_Door_A", new Vector3(0.6f, 0f, 0.5f), new Vector3(1.2f, 0.6f, 1.1f), null, Crate);
-            BoxMinMax("Crates_Door_B", new Vector3(0.6f, 0f, 1.15f), new Vector3(1.2f, 1.2f, 1.75f), null, Crate);
+            // Crate steps sit beside the centered door, leaving its swing and the
+            // direct entry sightline clear while preserving the front parkour route.
+            BoxMinMax("Crates_Door_A", new Vector3(5.0f, 0f, 0.5f), new Vector3(5.6f, 0.6f, 1.1f), null, Crate);
+            BoxMinMax("Crates_Door_B", new Vector3(5.0f, 0f, 1.15f), new Vector3(5.6f, 1.2f, 1.75f), null, Crate);
 
             // Crate steps up to the east ledge
             BoxMinMax("Crates_Vent_A", new Vector3(W - 0.65f, 0f, D - 4.2f), new Vector3(W - 0.05f, 0.6f, D - 3.6f), null, Crate);
@@ -638,14 +1000,13 @@ namespace RaccoonHeist.World.Editor
             // Neighbour building fills the west side — makes the outdoors a C-shape:
             // street -> east passage -> back alley
             BoxMinMax("NeighbourBuilding", new Vector3(OutW0, 0f, 0f), new Vector3(-0.2f, 4f, D + T + 4f), null, BrickMat(20.8f));
+            BuildNeighbourFrontage();
+            BuildExteriorShell();
 
-            // Street dressing: awnings over the shopfront, a parked food trailer
-            // (cover + climbable), ground decals so the flat zones read as real street
-            PlaceSynty("SM_Bld_Awning_Large_01", new Vector3(2f, 2.1f, -0.5f));
-            PlaceSynty("SM_Bld_Awning_Large_02", new Vector3(6.5f, 2.1f, -0.5f));
-            PlaceSynty("SM_Bld_Awning_Large_01", new Vector3(11f, 2.1f, -0.5f));
-            PlaceSynty("SM_Bld_Awning_03", new Vector3(-2.6f, 2.1f, -0.45f));
-            PlaceSynty("SM_Veh_Food_Trailer_01", new Vector3(9f, 0f, -4.2f), 90f);
+            // Street dressing: a parked food trailer (cover + climbable) and ground
+            // decals. The entrance canopy is part of the unified facade, not a deep
+            // prefab awning intersecting its windows and door trim.
+            PlaceSynty("SM_Veh_Food_Trailer_01", new Vector3(15.2f, 0f, -4.2f), 90f);
             PlaceSynty("SM_Env_Ground_Manhole_01", new Vector3(5.5f, 0.03f, -3.2f));
             PlaceSynty("SM_Env_Ground_ParkingLines_01", new Vector3(-2.5f, 0.03f, -4.2f));
             PlaceSynty("SM_Env_Ground_Panel_01", new Vector3(7.2f, 0.03f, 22.5f));
@@ -653,16 +1014,14 @@ namespace RaccoonHeist.World.Editor
             PlaceSynty("SM_Prop_Rubbish_Bin_03", new Vector3(12.5f, 0f, 22f), 190f);
             PlaceSynty("SM_Prop_Trash_Bags_01", new Vector3(10.9f, 0f, 24.3f), 120f);
 
-            // Bins across the street — the yeet landing zone (on the raised pavement)
+            // Bins across both lanes — the yeet landing zone on the far pavement.
             for (int i = 0; i < 3; i++)
             {
-                if (PlaceSynty($"SM_Prop_Rubbish_Bin_0{i + 1}", new Vector3(2.6f + i * 1.1f, 0.12f, -7.3f), 180f) == null)
-                    BoxMinMax($"Bin_{i}", new Vector3(2.3f + i * 1.1f, 0.12f, -7.6f), new Vector3(3.1f + i * 1.1f, 1f, -6.9f), null,
+                if (PlaceSynty($"SM_Prop_Rubbish_Bin_0{i + 1}", new Vector3(2.6f + i * 1.1f, 0.12f, OutD0 + 0.28f), 180f) == null)
+                    BoxMinMax($"Bin_{i}", new Vector3(2.3f + i * 1.1f, 0.12f, OutD0 + 0.05f), new Vector3(3.1f + i * 1.1f, 1f, OutD0 + 0.6f), null,
                         Mat("BinGreen", new Color(0.24f, 0.34f, 0.24f)));
             }
-            PlaceSynty("SM_Prop_Trash_Bags_01", new Vector3(5.6f, 0.12f, -7.2f), 40f);
-            PlaceSynty("SM_Prop_Bollard_Light_01", new Vector3(4f, 0.12f, -1.2f));
-            PlaceSynty("SM_Prop_Bollard_Light_01", new Vector3(10f, 0.12f, -1.2f));
+            PlaceSynty("SM_Prop_Trash_Bags_01", new Vector3(5.6f, 0.12f, OutD0 + 0.25f), 40f);
 
             // Side passage clutter (east, where the vent is)
             PlaceSynty("SM_Prop_Warehouse_Pallet_01", new Vector3(W + 3.5f, 0f, 6f), 15f);
@@ -671,10 +1030,18 @@ namespace RaccoonHeist.World.Editor
 
             // Alley roof route: crate (0.6) -> dumpster (1.3) -> AC unit (2.2) -> storage roof (3.1)
             CrateStack("AlleyCrate", 11.2f, StorageZ1 + 0.4f, 0.6f);
-            BoxMinMax("Dumpster", new Vector3(9.2f, 0f, StorageZ1 + 0.3f), new Vector3(10.8f, 1.3f, StorageZ1 + 1.3f), null,
-                Mat("DumpsterGreen", new Color(0.22f, 0.32f, 0.26f), 0.3f));
-            BoxMinMax("AcUnit", new Vector3(7.9f, 1.6f, StorageZ1 + T), new Vector3(8.9f, 2.2f, StorageZ1 + T + 0.7f), null,
-                Mat("AcMetal", new Color(0.55f, 0.56f, 0.58f), 0.35f));
+            var dumpster = PlaceSynty("SM_Prop_Dumptser_02", new Vector3(10f, 0f, StorageZ1 + 0.95f), 90f);
+            if (dumpster != null)
+                dumpster.name = "Dumpster";
+            else
+                BoxMinMax("Dumpster", new Vector3(9.2f, 0f, StorageZ1 + 0.3f), new Vector3(10.8f, 1.3f, StorageZ1 + 1.3f), null,
+                    Mat("DumpsterGreen", new Color(0.22f, 0.32f, 0.26f), 0.3f));
+            var acUnit = PlaceSynty("SM_Prop_Aircon_01", new Vector3(8.45f, 1.58f, StorageZ1 + 0.55f), 90f);
+            if (acUnit != null)
+                acUnit.name = "AcUnit";
+            else
+                BoxMinMax("AcUnit", new Vector3(7.9f, 1.6f, StorageZ1 + T), new Vector3(8.9f, 2.2f, StorageZ1 + T + 0.7f), null,
+                    Mat("AcMetal", new Color(0.55f, 0.56f, 0.58f), 0.35f));
 
             // More alley cover
             CrateStack("AlleyCrates_2", 2.5f, 22.5f, 1.2f);
@@ -682,10 +1049,347 @@ namespace RaccoonHeist.World.Editor
             PlaceSynty("SM_Prop_Trash_Bags_01", new Vector3(1.2f, 0f, 24.2f), 310f);
 
             // POLYGON City extras — silent no-ops until that pack is imported
-            PlaceSynty("SM_Veh_Car_Sedan_01", new Vector3(3.2f, 0f, -4.3f), 92f);
+            // Keep the actual entrance sightline clear; this parked car used to hide
+            // the door and pet flap from both players and the storefront camera.
+            PlaceSynty("SM_Veh_Car_Sedan_01", new Vector3(-8.5f, 0f, -4.3f), 92f);
             PlaceSynty("SM_Veh_Car_Taxi_01", new Vector3(-2.2f, 0f, -4.1f), 268f);
-            PlaceSynty("SM_Bld_FireEscape_01", new Vector3(-2.6f, 0.12f, 0.35f), 180f);
             RoofBillboard(new Vector3(-2.6f, 4f, 12f), 90f, 3); // neighbour's roof, facing the passage
+
+            BuildPlayableBoundaryDressing();
+            DecorateStreetPassageAndAlley();
+        }
+
+        static void BuildNeighbourFrontage()
+        {
+            // Screenshot regression guard: the old fire-escape prefab landed at pavement level here and intersected
+            // a bench, reading as an unsupported clothes rack. A closed roller shutter
+            // gives this blank neighbour wall a grounded, street-facing purpose instead.
+            var shutter = Mat("NeighbourShutter", new Color(0.15f, 0.19f, 0.24f), 0.10f);
+            var trim = Mat("NeighbourShutterTrim", new Color(0.055f, 0.075f, 0.10f), 0.14f);
+            var sign = Mat("NeighbourSign", new Color(0.13f, 0.10f, 0.16f), 0.08f);
+            var lamp = EmissiveMat("NeighbourFrontageLamp", new Color(0.72f, 0.48f, 0.22f), new Color(2.4f, 1.15f, 0.42f));
+
+            // The neighbour wall is exactly OutW0..-0.2. These inset limits leave
+            // visible brick reveals on both sides, including the frame thickness.
+            const float left = -4.65f;
+            const float right = -0.55f;
+            BoxMinMax("NeighbourClosedShutter", new Vector3(left, 0.16f, -0.075f), new Vector3(right, 2.48f, -0.025f), null, shutter);
+            BoxMinMax("NeighbourShutterFrame_L", new Vector3(left - 0.10f, 0.10f, -0.12f), new Vector3(left + 0.05f, 2.60f, -0.015f), null, trim);
+            BoxMinMax("NeighbourShutterFrame_R", new Vector3(right - 0.05f, 0.10f, -0.12f), new Vector3(right + 0.10f, 2.60f, -0.015f), null, trim);
+            BoxMinMax("NeighbourShutterFrame_T", new Vector3(left - 0.10f, 2.48f, -0.12f), new Vector3(right + 0.10f, 2.62f, -0.015f), null, trim);
+            for (float y = 0.32f; y < 2.42f; y += 0.22f)
+                BoxMinMax($"NeighbourShutterSlat_{y:0.00}", new Vector3(left + 0.04f, y, -0.10f), new Vector3(right - 0.04f, y + 0.025f, -0.065f), null, trim);
+
+            BoxMinMax("NeighbourShopSign", new Vector3(-4.20f, 2.78f, -0.10f), new Vector3(-1.00f, 3.28f, -0.025f), null, sign);
+            BoxMinMax("NeighbourShopSignLight", new Vector3(-2.82f, 3.05f, -0.17f), new Vector3(-2.38f, 3.18f, -0.105f), null, lamp);
+            PointLight("NeighbourFrontageGlow", new Vector3(-2.6f, 2.78f, -0.72f), new Color(1f, 0.54f, 0.22f), 0.55f, 4.2f);
+        }
+
+        // The interior walls stay simple and readable, while thin exterior skins make
+        // the building belong to the surrounding city.
+        static void BuildExteriorShell()
+        {
+            var exteriorBrick = BrickMat(D);
+            BoxMinMax("ExteriorSkin_EastShop", new Vector3(W + T, 0f, 1.5f), new Vector3(W + T + 0.045f, H, D + T), null, exteriorBrick);
+            BoxMinMax("ExteriorSkin_BackRoomEast", new Vector3(3f + T, 0f, D + T), new Vector3(3f + T + 0.045f, H, D + T + 4f + T), null, exteriorBrick);
+            BoxMinMax("ExteriorSkin_BackRoomNorth", new Vector3(0f, 0f, D + T + 4f + T), new Vector3(3f + T, H, D + T + 4f + T + 0.045f), null, exteriorBrick);
+            BoxMinMax("ExteriorSkin_StorageNorth_W", new Vector3(StorageX0, 0f, StorageZ1 + T), new Vector3(8.2f, H, StorageZ1 + T + 0.045f), null, exteriorBrick);
+            BoxMinMax("ExteriorSkin_StorageNorth_E", new Vector3(9f, 0f, StorageZ1 + T), new Vector3(StorageX1, H, StorageZ1 + T + 0.045f), null, exteriorBrick);
+
+            // Three overlapping modular shopfront prefabs made this read as three
+            // unrelated buildings and hid signs/posters behind their structural bays.
+            // One measured frame now follows the actual wall openings exactly.
+            BuildUnifiedStorefront(exteriorBrick);
+            BuildStorefrontBranding();
+            var openSign = PlaceSyntyDecorative("SM_Sign_Neon_Open_03", new Vector3(2.05f, 1.25f, 0.08f), 180f);
+            MakeEmissive(openSign);
+
+            float doorMin = EntranceX - EntranceWidth * 0.5f;
+            float doorMax = EntranceX + EntranceWidth * 0.5f;
+
+            // The generated panel is the only door mesh. Its glass, hardware, and pet
+            // flap share the real hinge; no second prefab sits half a metre in front.
+            BoxMinMax("EntranceDoormat", new Vector3(doorMin - 0.05f, 0.121f, -0.96f), new Vector3(doorMax + 0.05f, 0.145f, -0.53f), null,
+                Mat("EntranceMat", new Color(0.13f, 0.15f, 0.17f), 0.05f));
+            var brass = Mat("EntranceBrass", new Color(0.62f, 0.45f, 0.17f), 0.52f);
+            ParentToEntranceDoor(BoxMinMax("EntranceHandle", new Vector3(doorMax - 0.26f, 1.0f, -0.22f),
+                new Vector3(doorMax - 0.20f, 1.31f, -0.16f), null, brass));
+            var entranceTrim = Mat("EntranceTrim", new Color(0.18f, 0.39f, 0.48f), 0.36f);
+            BoxMinMax("EntranceTrim_L", new Vector3(doorMin - 0.08f, 0.1f, -0.29f), new Vector3(doorMin, 2.18f, -0.19f), null, entranceTrim);
+            BoxMinMax("EntranceTrim_R", new Vector3(doorMax, 0.1f, -0.29f), new Vector3(doorMax + 0.08f, 2.18f, -0.19f), null, entranceTrim);
+            BoxMinMax("EntranceTrim_T", new Vector3(doorMin - 0.08f, 2.10f, -0.29f), new Vector3(doorMax + 0.08f, 2.18f, -0.19f), null, entranceTrim);
+
+            var doorGlass = BoxMinMax("EntranceDoorGlass", new Vector3(doorMin + 0.17f, 0.82f, -0.172f),
+                new Vector3(doorMax - 0.17f, 1.91f, -0.154f), null,
+                TransparentMat("StorefrontGlass", new Color(0.12f, 0.30f, 0.48f, 0.38f)));
+            Object.DestroyImmediate(doorGlass.GetComponent<Collider>());
+            ParentToEntranceDoor(doorGlass);
+            ParentToEntranceDoor(BoxMinMax("EntranceDoorWindow_L", new Vector3(doorMin + 0.12f, 0.77f, -0.20f),
+                new Vector3(doorMin + 0.18f, 1.96f, -0.16f), null, entranceTrim));
+            ParentToEntranceDoor(BoxMinMax("EntranceDoorWindow_R", new Vector3(doorMax - 0.18f, 0.77f, -0.20f),
+                new Vector3(doorMax - 0.12f, 1.96f, -0.16f), null, entranceTrim));
+            ParentToEntranceDoor(BoxMinMax("EntranceDoorWindow_B", new Vector3(doorMin + 0.12f, 0.77f, -0.20f),
+                new Vector3(doorMax - 0.12f, 0.83f, -0.16f), null, entranceTrim));
+            ParentToEntranceDoor(BoxMinMax("EntranceDoorWindow_T", new Vector3(doorMin + 0.12f, 1.90f, -0.20f),
+                new Vector3(doorMax - 0.12f, 1.96f, -0.16f), null, entranceTrim));
+            var flapFrame = Mat("PetFlapFrame", new Color(0.16f, 0.18f, 0.20f), 0.24f);
+            ParentToEntranceDoor(BoxMinMax("PetFlapFrame_L", new Vector3(EntranceX - 0.24f, 0.12f, -0.22f),
+                new Vector3(EntranceX - 0.18f, 0.5f, -0.16f), null, flapFrame));
+            ParentToEntranceDoor(BoxMinMax("PetFlapFrame_R", new Vector3(EntranceX + 0.18f, 0.12f, -0.22f),
+                new Vector3(EntranceX + 0.24f, 0.5f, -0.16f), null, flapFrame));
+            ParentToEntranceDoor(BoxMinMax("PetFlapFrame_T", new Vector3(EntranceX - 0.18f, 0.44f, -0.22f),
+                new Vector3(EntranceX + 0.18f, 0.5f, -0.16f), null, flapFrame));
+            ParentToEntranceDoor(BoxMinMax("PetFlapPanel", new Vector3(EntranceX - 0.18f, 0.14f, -0.215f),
+                new Vector3(EntranceX + 0.18f, 0.44f, -0.155f), null,
+                Mat("PetFlapPanel", new Color(0.34f, 0.29f, 0.24f), 0.12f)));
+
+            // A compact, procedural canopy is aligned to the same central bay. It
+            // replaces the deep prefab awning that intersected the trim and glazing.
+            var canopy = BoxMinMax("EntranceCanopy", new Vector3(doorMin - 0.18f, 2.12f, -0.72f),
+                new Vector3(doorMax + 0.18f, 2.22f, -0.20f), null,
+                Mat("StorefrontCanopy", new Color(0.32f, 0.075f, 0.085f), 0.18f));
+            Object.DestroyImmediate(canopy.GetComponent<Collider>());
+            var canopyLight = BoxMinMax("EntranceCanopyLight", new Vector3(EntranceX - 0.30f, 2.105f, -0.64f),
+                new Vector3(EntranceX + 0.30f, 2.125f, -0.38f), null,
+                EmissiveMat("EntranceCanopyLight", new Color(0.68f, 0.43f, 0.18f), new Color(3.2f, 1.55f, 0.52f)));
+            Object.DestroyImmediate(canopyLight.GetComponent<Collider>());
+
+            // Side/rear details stay asset-rich; the front is deliberately uncluttered
+            // so nothing hides behind a frame or competes with the open sign.
+            MakeEmissive(PlaceSyntyDecorative("SM_Prop_Wall_Light_01", new Vector3(W + 0.44f, 2.35f, 7.2f), 90f));
+            MakeEmissive(PlaceSyntyDecorative("SM_Prop_Wall_Light_01", new Vector3(9.6f, 2.35f, StorageZ1 + T + 0.44f)));
+            PlaceSyntyDecorative("SM_Bld_Awning_01_Small", new Vector3(8.6f, 2.35f, StorageZ1 + T + 0.12f));
+            PlaceSyntyDecorative("SM_Prop_Poster_02", new Vector3(6.4f, 0.85f, StorageZ1 + T + 0.08f));
+            PlaceSyntyDecorative("SM_Prop_Wall_Pipe_02", new Vector3(10.25f, 0.15f, StorageZ1 + T + 0.08f));
+            PlaceSynty("SM_Prop_PowerBox_01", new Vector3(W + 0.65f, 0f, 10.5f), 90f);
+            // The old seven-metre pipe preset projected through the passage and roof.
+            // A compact, wall-flush utility run gives the same grime without tangles.
+            PlaceSyntyDecorative("SM_Prop_Wall_Pipe_01", new Vector3(W + 0.18f, 0.35f, 12.35f), 90f);
+            PlaceSyntyDecorative("SM_Prop_Wall_Pipe_02", new Vector3(W + 0.18f, 0.35f, 12.75f), 90f);
+            PlaceSyntyDecorative("SM_Prop_Wall_Pipe_01", new Vector3(W + 0.18f, 0.35f, 13.15f), 90f);
+            MakeEmissive(PlaceSyntyDecorative("SM_Prop_Wall_Light_01", new Vector3(W + 0.44f, 2.25f, 16.2f), 90f));
+            MakeEmissive(PlaceSyntyDecorative("SM_Prop_Wall_Light_01", new Vector3(2.2f, 2.35f, D + T + 4f + T + 0.44f)));
+        }
+
+        static void BuildUnifiedStorefront(Material exteriorBrick)
+        {
+            float doorMin = EntranceX - EntranceWidth * 0.5f;
+            float doorMax = EntranceX + EntranceWidth * 0.5f;
+            const float windowMinX = 0.5f;
+            const float windowMaxX = W - 0.5f;
+            const float windowBottom = 0.9f;
+            const float windowTop = 2.5f;
+            var frame = Mat("StorefrontFrame", new Color(0.105f, 0.24f, 0.31f), 0.42f);
+            var glass = TransparentMat("StorefrontGlass", new Color(0.12f, 0.30f, 0.48f, 0.38f));
+
+            // Continuous masonry and fascia make the full fourteen metres read as one
+            // address. All depth is within 5.5 cm of the actual front wall.
+            BoxMinMax("StorefrontPlinth_L", new Vector3(0.2f, 0.1f, -0.225f),
+                new Vector3(doorMin, windowBottom, -0.20f), null, exteriorBrick);
+            BoxMinMax("StorefrontPlinth_R", new Vector3(doorMax, 0.1f, -0.225f),
+                new Vector3(W - 0.2f, windowBottom, -0.20f), null, exteriorBrick);
+
+            var leftGlass = BoxMinMax("StorefrontGlass_Left", new Vector3(windowMinX, windowBottom, -0.215f),
+                new Vector3(doorMin - 0.22f, windowTop, -0.202f), null, glass);
+            var rightGlass = BoxMinMax("StorefrontGlass_Right", new Vector3(doorMax + 0.22f, windowBottom, -0.215f),
+                new Vector3(windowMaxX, windowTop, -0.202f), null, glass);
+            Object.DestroyImmediate(leftGlass.GetComponent<Collider>());
+            Object.DestroyImmediate(rightGlass.GetComponent<Collider>());
+
+            // Outer frame, door-adjacent frame, two mullions, and shared top/bottom
+            // rails. Nothing crosses a sign or sits in front of a poster.
+            foreach (float x in new[] { windowMinX, doorMin - 0.22f, doorMax + 0.22f, windowMaxX })
+                BoxMinMax($"StorefrontFrame_V_{x}", new Vector3(x - 0.055f, windowBottom - 0.06f, -0.255f),
+                    new Vector3(x + 0.055f, windowTop + 0.06f, -0.19f), null, frame);
+            foreach (float x in new[] { (windowMinX + doorMin - 0.22f) * 0.5f, (doorMax + 0.22f + windowMaxX) * 0.5f })
+                BoxMinMax($"StorefrontMullion_{x}", new Vector3(x - 0.035f, windowBottom, -0.247f),
+                    new Vector3(x + 0.035f, windowTop, -0.19f), null, frame);
+            foreach (float y in new[] { windowBottom, windowTop })
+            {
+                BoxMinMax($"StorefrontRail_L_{y}", new Vector3(windowMinX - 0.055f, y - 0.055f, -0.255f),
+                    new Vector3(doorMin - 0.165f, y + 0.055f, -0.19f), null, frame);
+                BoxMinMax($"StorefrontRail_R_{y}", new Vector3(doorMax + 0.165f, y - 0.055f, -0.255f),
+                    new Vector3(windowMaxX + 0.055f, y + 0.055f, -0.19f), null, frame);
+            }
+        }
+
+        // Builds the title from the POLYGON pack's measured letter prefabs. This
+        // keeps the shop identity fully 3D and in-family with the supplied low-poly art.
+        static void BuildStorefrontBranding()
+        {
+            var backing = BoxMinMax("RaccoonHeistSignBacking", new Vector3(0.28f, 2.22f, -0.31f),
+                new Vector3(W - 0.28f, 2.98f, -0.22f), null,
+                Mat("RaccoonHeistSignBacking", new Color(0.025f, 0.045f, 0.075f), 0.25f));
+            Object.DestroyImmediate(backing.GetComponent<Collider>());
+
+            const string title = "RACCOON HEIST";
+            const float scale = 0.82f;
+            const float spacing = 0.08f;
+            const float wordSpace = 0.34f;
+            float total = 0f;
+            foreach (char character in title)
+            {
+                if (character == ' ') { total += wordSpace; continue; }
+                var prefab = SyntyPrefab($"SM_Sign_3dText_Letter_{character}");
+                if (prefab != null) total += GeometryBounds(prefab).size.x * scale + spacing;
+            }
+            total = Mathf.Max(0f, total - spacing);
+
+            var holder = new GameObject("RaccoonHeistTitle").transform;
+            holder.SetParent(root, false);
+            var letterMat = EmissiveMat("RaccoonHeistLetters", new Color(0.08f, 0.48f, 0.62f), new Color(0.2f, 2.4f, 3.2f));
+            float cursor = 7f - total * 0.5f;
+            foreach (char character in title)
+            {
+                if (character == ' ') { cursor += wordSpace; continue; }
+                string prefabName = $"SM_Sign_3dText_Letter_{character}";
+                var prefab = SyntyPrefab(prefabName);
+                if (prefab == null) continue;
+                float width = GeometryBounds(prefab).size.x * scale;
+                var letter = PlaceSyntyDecorative(prefabName, new Vector3(cursor + width * 0.5f, 2.28f, -0.35f), 180f);
+                if (letter != null)
+                {
+                    letter.name = $"Title_{character}_{Mathf.RoundToInt(cursor * 100f)}";
+                    letter.transform.localScale *= scale;
+                    ApplyMatRecursive(letter, letterMat);
+                    letter.transform.SetParent(holder, true);
+                }
+                cursor += width + spacing;
+            }
+
+        }
+
+        static void ApplyMatRecursive(GameObject go, Material mat)
+        {
+            foreach (var renderer in go.GetComponentsInChildren<Renderer>())
+            {
+                var materials = renderer.sharedMaterials;
+                for (int i = 0; i < materials.Length; i++) materials[i] = mat;
+                renderer.sharedMaterials = materials;
+            }
+        }
+
+        static void ParentToEntranceDoor(GameObject go)
+        {
+            if (go == null) return;
+            var pivot = root.Find("EntranceDoorPivot");
+            if (pivot != null) go.transform.SetParent(pivot, true);
+        }
+
+        // Invisible colliders remain the authoritative limit, but every edge also has
+        // a physical explanation: storefronts, chain-link fencing, or road works.
+        static void BuildPlayableBoundaryDressing()
+        {
+            for (float z = 2.5f; z < OutD1; z += 5f)
+                PlaceSynty("SM_Bld_Metal_Fence_02", new Vector3(OutW1 + 0.08f, 0f, z), 90f);
+            PlaceSynty("SM_Bld_Metal_Fence_02", new Vector3(OutW0 - 0.08f, 0f, 22.5f), 90f);
+
+            foreach (float z in new[] { -12.3f, -10.7f, -9.1f, -6.3f, -4.7f, -3.1f })
+            {
+                PlaceSynty("SM_Prop_Barrier_01", new Vector3(OutW0 + 0.15f, 0.02f, z), 90f);
+                PlaceSynty("SM_Prop_Barrier_01", new Vector3(OutW1 - 0.15f, 0.02f, z), 90f);
+            }
+            PlaceSynty("SM_Prop_Cone_01", new Vector3(OutW0 + 0.45f, 0.02f, -2.15f));
+            PlaceSynty("SM_Prop_Cone_02", new Vector3(OutW1 - 0.45f, 0.02f, -7.45f), 25f);
+            // Kept clear of the roadwork barriers instead of intersecting their ends.
+            PlaceSynty("SM_Veh_Car_Police_01", new Vector3(OutW1 + 3.3f, 0.02f, -4.3f), 90f);
+        }
+
+        static void DecorateStreetPassageAndAlley()
+        {
+            // Front street furniture establishes scale and creates strong silhouettes.
+            PlaceSynty("SM_Prop_Hydrant_01", new Vector3(-1.1f, 0.12f, -1.72f), 20f);
+            PlaceSynty("SM_Prop_Mailbox_01", new Vector3(12.8f, 0.12f, -1.68f), 180f);
+            PlaceSynty("SM_Prop_ParkingMeter_01", new Vector3(0.2f, 0.12f, -1.78f));
+            PlaceSynty("SM_Prop_ParkingMeter_01", new Vector3(13.8f, 0.12f, -1.78f));
+            PlaceSynty("SM_Prop_ParkBench_01", new Vector3(10.8f, 0.12f, OutD0 + 0.25f), 180f);
+            PlaceSyntyDecorative("SM_Prop_Newspaper_01", new Vector3(6.5f, 0.125f, -0.38f), 15f);
+
+            // Keep the hero facade and centered entrance readable, but let the shop
+            // pavement join the broader street composition at both outer corners.
+            PlaceSynty("SM_Prop_Planter_02", new Vector3(W + 2.15f, 0.12f, -0.45f));
+            PlaceSynty("SM_Prop_Newspaper_02", new Vector3(W + 3.45f, 0.12f, -0.42f), 180f);
+            PlaceSynty("SM_Prop_Rubbish_Bin_01", new Vector3(W + 4.45f, 0.12f, -0.42f), 345f);
+
+            foreach (var puddle in new[]
+                     {
+                         new Vector3(0.5f, 0.032f, -3.2f), new Vector3(11.2f, 0.032f, -5.6f),
+                         new Vector3(15.6f, 0.012f, 5.5f), new Vector3(4.2f, 0.012f, 23.2f)
+                     })
+                PlaceSyntyDecorative("SM_Prop_Water_Puddle_01", puddle, Random.Range(0f, 360f));
+
+            // Small access covers interrupt the new perimeter slab aprons without
+            // turning the route into an obstacle course at raccoon height.
+            PlaceSyntyDecorative("SM_Prop_Sidewalk_Panel_02", new Vector3(14.78f, 0.076f, 5.2f), 18f);
+            PlaceSyntyDecorative("SM_Prop_Sidewalk_Panel_04", new Vector3(14.78f, 0.076f, 14.4f), 75f);
+            PlaceSyntyDecorative("SM_Prop_Sidewalk_Panel_03", new Vector3(4.9f, 0.076f, 20.75f), 110f);
+
+            // East service passage: utility hardware, a skip, and delivery clutter.
+            PlaceSynty("SM_Prop_Skip_02", new Vector3(17.75f, 0f, 15.5f), 90f);
+            PlaceSynty("SM_Prop_Warehouse_Boxes_Stacked_03", new Vector3(17.5f, 0f, 8.2f), 15f);
+            PlaceSynty("SM_Prop_Warehouse_Pallet_Jack_01", new Vector3(15.7f, 0f, 10.1f), 200f);
+            PlaceSynty("SM_Prop_Trashbin_01", new Vector3(18.15f, 0f, 4.2f), 25f);
+
+            // Rear alley: mixed refuse, paper, and localized steam. Avoid unsupported
+            // hanging props here; the open service yard has nowhere credible to anchor them.
+            PlaceSynty("SM_Prop_TrashBag_01", new Vector3(7.8f, 0f, 24.05f), 25f);
+            PlaceSynty("SM_Prop_TrashBag_03", new Vector3(8.45f, 0f, 23.85f), 300f);
+            PlaceSyntyDecorative("SM_Props_Papers_03", new Vector3(12.2f, 0.015f, 23.7f), 80f);
+
+            // Every plume has an obvious source. This avoids disconnected smoke that
+            // looks like a misplaced effect rather than city infrastructure.
+            PlaceSyntyDecorative("SM_Env_Ground_Manhole_01", new Vector3(17.8f, 0.025f, 10f), 20f);
+            PlaceSyntyDecorative("SM_Env_Ground_Manhole_01", new Vector3(3.8f, 0.025f, 24.1f), 105f);
+            PlaceSyntyFx("FX_Steam", new Vector3(5.5f, 0.06f, -3.2f), 0f, 0.7f);
+            PlaceSyntyFx("FX_Steam", new Vector3(W + 0.45f, 0.16f, 1.25f), 90f, 0.55f);
+            PlaceSyntyFx("FX_Steam", new Vector3(17.8f, 0.075f, 10f), 180f, 0.55f);
+            PlaceSyntyFx("FX_Steam", new Vector3(3.8f, 0.075f, 24.1f), 25f, 0.5f);
+
+            // Thin animated ground haze makes the fog visible in nearby light pools.
+            // It is deliberately low-alpha and broad: atmosphere, not smoke plumes.
+            PlaceGroundHaze("StreetGroundHaze", new Vector3(7f, 0.28f, -7f), 0.56f);
+            PlaceGroundHaze("PassageGroundHaze", new Vector3(17f, 0.24f, 10.5f), 0.34f);
+            PlaceGroundHaze("AlleyGroundHaze", new Vector3(7.5f, 0.24f, 23f), 0.38f);
+        }
+
+        static void PlaceGroundHaze(string name, Vector3 position, float scale)
+        {
+            var haze = PlaceSyntyFx("FX_Fog_01", position, 0f, scale);
+            if (haze == null) return;
+            haze.name = name;
+            foreach (var particles in haze.GetComponentsInChildren<ParticleSystem>())
+            {
+                var main = particles.main;
+                main.startColor = new ParticleSystem.MinMaxGradient(
+                    new Color(0.16f, 0.22f, 0.38f, 0.08f),
+                    new Color(0.30f, 0.40f, 0.62f, 0.22f));
+                main.startLifetime = new ParticleSystem.MinMaxCurve(18f, 28f);
+                main.startSize = new ParticleSystem.MinMaxCurve(8f, 18f);
+                var emission = particles.emission;
+                emission.rateOverTime = 3f;
+                var shape = particles.shape;
+                shape.radius = 14f;
+            }
+            foreach (var renderer in haze.GetComponentsInChildren<ParticleSystemRenderer>())
+                renderer.sharedMaterial = GroundHazeMaterial(renderer.sharedMaterial);
+        }
+
+        static Material GroundHazeMaterial(Material source)
+        {
+            const string path = "Assets/Materials/Greybox/GroundHaze.mat";
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material == null)
+            {
+                material = new Material(source);
+                AssetDatabase.CreateAsset(material, path);
+            }
+            // The supplied generic FX material fades particles out eight metres from
+            // the camera; that makes a block-scale fog system effectively invisible.
+            if (material.HasProperty("_Enable_Camera_Fade")) material.SetFloat("_Enable_Camera_Fade", 0f);
+            if (material.HasProperty("_CameraFadingEnabled")) material.SetFloat("_CameraFadingEnabled", 0f);
+            if (material.HasProperty("_TintColor")) material.SetColor("_TintColor", new Color(0.34f, 0.46f, 0.78f, 0.72f));
+            EditorUtility.SetDirty(material);
+            return material;
         }
 
         // ---------- backdrop: the city beyond the walls ----------
@@ -699,21 +1403,26 @@ namespace RaccoonHeist.World.Editor
             BoxMinMax("VoidFloor", new Vector3(-70f, -0.25f, -70f), new Vector3(W + 70f, -0.15f, D + 70f), backdrop,
                 Mat("Void", new Color(0.04f, 0.04f, 0.06f)));
 
+            BuildVisualStreetRing(backdrop);
+
             // Street level: shopfronts shoulder-to-shoulder with the train station as
             // the landmark directly across from our shop; block continues east/west;
             // apartments crowd the alley fence
             BackdropRow(backdrop, ShopFronts, true, OutD0 - 3.5f, OutW0 - 30f, 1.5f, 0f, 6f, 10f, 0.1f, 0.5f, true);
-            var station = PlaceSynty("SM_Bld_Station_01", new Vector3(7f, 0f, -13.3f));
-            if (station != null) { MakeEmissive(station); DisableShadows(station); station.transform.SetParent(backdrop, true); }
+            var station = PlaceSynty("SM_Bld_Station_01", new Vector3(7f, 0f, OutD0 - 5.3f));
+            if (station != null) { MakeEmissive(station); station.transform.SetParent(backdrop, true); }
             BackdropRow(backdrop, ShopFronts, true, OutD0 - 3.5f, 12.5f, OutW1 + 30f, 0f, 6f, 10f, 0.1f, 0.5f, true);
-            BackdropRow(backdrop, ShopFronts, true, 4f, OutW1 + 0.5f, OutW1 + 30f, 180f, 6f, 10f, 0.1f, 0.5f, true);
-            BackdropRow(backdrop, ShopFronts, true, 4f, OutW0 - 30f, OutW0 - 0.5f, 180f, 6f, 10f, 0.1f, 0.5f, true);
-            BackdropRow(backdrop, Apartments, true, OutD1 + 6f, OutW0 - 20f, OutW1 + 20f, 180f, 8f, 14f, 0.2f, 1f, false, true);
+            BackdropRow(backdrop, Apartments, true, OutD1 + 14.3f, OutW0 - 28f, OutW1 + 28f, 180f,
+                8f, 14f, 0.2f, 1f, false, true, OutD1 + 14.1f);
 
-            // Flanks: the block continues along both sides so no viewpoint faces bare
-            // ground — east past the passage, west along the alley end
-            BackdropRow(backdrop, Apartments, false, OutW1 + 3f, -2f, OutD1 + 18f, 270f, 8f, 14f, 0.2f, 1f, false, true);
-            BackdropRow(backdrop, Apartments, false, OutW0 - 3f, D + 4f, OutD1 + 18f, 90f, 8f, 14f, 0.2f, 1f, false, true);
+            // Flanks sit across the side roads, so the shop reads as one complete
+            // city block instead of a facade with empty ground behind it. Do not add
+            // along-X shop rows at z=4 here: they cross both side streets and swallow
+            // vehicles placed at the west/east curbs.
+            BackdropRow(backdrop, Apartments, false, OutW1 + 14.3f, OutD0 - 15f, OutD1 + 20f, 270f,
+                8f, 14f, 0.2f, 1f, false, true, OutW1 + 14.1f);
+            BackdropRow(backdrop, Apartments, false, OutW0 - 14.3f, OutD0 - 15f, OutD1 + 20f, 90f,
+                8f, 14f, 0.2f, 1f, false, true, OutW0 - 14.1f);
 
             // Far skyline: procedural towers pushed deep into the fog — silhouettes only
             BackdropRow(backdrop, null, true, OutD0 - 42f, OutW0 - 40f, OutW1 + 40f, 0f, 16f, 30f, 2f, 6f);
@@ -724,31 +1433,270 @@ namespace RaccoonHeist.World.Editor
             StreetDressing();
         }
 
+        // Roads wrap visually around the entire block. Only the front face, east
+        // service passage, and rear alley are playable; the other streets sit beyond
+        // chain-link boundaries and sell a larger city without bloating traversal.
+        static void BuildVisualStreetRing(Transform backdrop)
+        {
+            var road = TiledMat("CityAsphaltOutdoor", new Color(0.25f, 0.27f, 0.32f), TexAsphalt, 32f, 4f, 0.18f);
+            var walk = TiledMat("CitySidewalkConcrete", new Color(0.35f, 0.36f, 0.39f), TexRough, 18f, 4f, 0.05f);
+            var curb = TiledMat("CityCurbStone", new Color(0.54f, 0.55f, 0.58f), TexSlabs, 24f, 1f, 0.05f);
+
+            // Rear cross street, east side street, and west side street.
+            BoxMinMax("CityRoad_Back", new Vector3(OutW0 - 35f, 0f, OutD1 + 2f), new Vector3(OutW1 + 35f, 0.018f, OutD1 + 9f), backdrop, road);
+            BoxMinMax("CityRoad_East", new Vector3(OutW1 + 2f, 0f, OutD0 - 35f), new Vector3(OutW1 + 9f, 0.018f, OutD1 + 35f), backdrop, road);
+            BoxMinMax("CityRoad_West", new Vector3(OutW0 - 9f, 0f, OutD0 - 35f), new Vector3(OutW0 - 2f, 0.018f, OutD1 + 35f), backdrop, road);
+
+            BoxMinMax("CityWalk_BackNear", new Vector3(OutW0 - 35f, 0f, OutD1), new Vector3(OutW1 + 35f, 0.12f, OutD1 + 2f), backdrop, walk);
+            BoxMinMax("CityWalk_BackFar", new Vector3(OutW0 - 35f, 0f, OutD1 + 9f), new Vector3(OutW1 + 35f, 0.12f, OutD1 + 13.5f), backdrop, walk);
+            BoxMinMax("CityWalk_EastNear", new Vector3(OutW1, 0f, OutD0 - 35f), new Vector3(OutW1 + 2f, 0.12f, OutD1 + 35f), backdrop, walk);
+            BoxMinMax("CityWalk_EastFar", new Vector3(OutW1 + 9f, 0f, OutD0 - 35f), new Vector3(OutW1 + 13.5f, 0.12f, OutD1 + 35f), backdrop, walk);
+            BoxMinMax("CityWalk_WestNear", new Vector3(OutW0 - 2f, 0f, OutD0 - 35f), new Vector3(OutW0, 0.12f, OutD1 + 35f), backdrop, walk);
+            BoxMinMax("CityWalk_WestFar", new Vector3(OutW0 - 13.5f, 0f, OutD0 - 35f), new Vector3(OutW0 - 9f, 0.12f, OutD1 + 35f), backdrop, walk);
+
+            // Raised curb caps make both paired pavements read as separate surfaces in the
+            // dark grade. They also expose any accidental road-side prop placement.
+            BoxMinMax("CityCurb_BackNear", new Vector3(OutW0 - 35f, 0.12f, OutD1 + 1.84f),
+                new Vector3(OutW1 + 35f, 0.18f, OutD1 + 2f), backdrop, curb);
+            BoxMinMax("CityCurb_BackFar", new Vector3(OutW0 - 35f, 0.12f, OutD1 + 9f),
+                new Vector3(OutW1 + 35f, 0.18f, OutD1 + 9.16f), backdrop, curb);
+            BoxMinMax("CityCurb_EastNear", new Vector3(OutW1 + 1.84f, 0.12f, OutD0 - 35f),
+                new Vector3(OutW1 + 2f, 0.18f, OutD1 + 35f), backdrop, curb);
+            BoxMinMax("CityCurb_EastFar", new Vector3(OutW1 + 9f, 0.12f, OutD0 - 35f),
+                new Vector3(OutW1 + 9.16f, 0.18f, OutD1 + 35f), backdrop, curb);
+            BoxMinMax("CityCurb_WestNear", new Vector3(OutW0 - 2f, 0.12f, OutD0 - 35f),
+                new Vector3(OutW0 - 1.84f, 0.18f, OutD1 + 35f), backdrop, curb);
+            BoxMinMax("CityCurb_WestFar", new Vector3(OutW0 - 9.16f, 0.12f, OutD0 - 35f),
+                new Vector3(OutW0 - 9f, 0.18f, OutD1 + 35f), backdrop, curb);
+
+            // Measured 5 m POLYGON road tiles provide painted lines on every side.
+            for (float x = OutW0 - 35f; x < OutW1 + 35f; x += 5f)
+            {
+                var tile = PlaceSynty("SM_Env_Road_Lines_01", new Vector3(x + 2.5f, 0.024f, OutD1 + 5.5f), 90f);
+                if (tile != null) tile.transform.SetParent(backdrop, true);
+            }
+            for (float z = OutD0 - 35f; z < OutD1 + 35f; z += 5f)
+            {
+                var east = PlaceSynty("SM_Env_Road_Lines_01", new Vector3(OutW1 + 5.5f, 0.024f, z + 2.5f));
+                var west = PlaceSynty("SM_Env_Road_Lines_01", new Vector3(OutW0 - 5.5f, 0.024f, z + 2.5f));
+                if (east != null) east.transform.SetParent(backdrop, true);
+                if (west != null) west.transform.SetParent(backdrop, true);
+            }
+
+            // Parked traffic makes the perimeter roads legible through the fence and fog.
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Van_01", new Vector3(-10f, 0.02f, OutD1 + 2.9f), 88f);
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Medium_01", new Vector3(23f, 0.02f, OutD1 + 8f), 270f);
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Small_01", new Vector3(OutW1 + 2.9f, 0.02f, 7f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Taxi_01", new Vector3(OutW1 + 8.1f, 0.02f, 20f));
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Medium_01", new Vector3(OutW0 - 2.9f, 0.02f, 5f));
+            PlaceBackdropProp(backdrop, "SM_Veh_Car_Small_01", new Vector3(OutW0 - 8.1f, 0.02f, 21f), 180f);
+            foreach (float x in new[] { -24f, -8f, 8f, 24f, 40f })
+                CreatePerimeterLamp($"BackLamp_{x}", new Vector3(x, 0.12f, OutD1 + 1.2f), 180f, backdrop);
+            foreach (float z in new[] { -8f, 5f, 20f, 33f })
+                CreatePerimeterLamp($"EastLamp_{z}", new Vector3(OutW1 + 1.2f, 0.12f, z), 270f, backdrop);
+            foreach (float z in new[] { -6f, 8f, 22f, 34f })
+                CreatePerimeterLamp($"WestLamp_{z}", new Vector3(OutW0 - 1.2f, 0.12f, z), 90f, backdrop);
+
+            // The opposite sidewalks need their own curb-side lighting; relying on
+            // lamps across a seven-metre road leaves their furniture as silhouettes.
+            foreach (float x in new[] { -16f, 0f, 16f, 32f })
+                CreatePerimeterLamp($"BackFarLamp_{x}", new Vector3(x, 0.12f, OutD1 + 9.72f), 0f, backdrop, 6.2f);
+            foreach (float z in new[] { -1f, 12f, 27f, 34f })
+                CreatePerimeterLamp($"EastFarLamp_{z}", new Vector3(OutW1 + 9.72f, 0.12f, z), 90f, backdrop, 6.2f);
+            foreach (float z in new[] { 1f, 15f, 29f })
+                CreatePerimeterLamp($"WestFarLamp_{z}", new Vector3(OutW0 - 9.72f, 0.12f, z), 270f, backdrop, 6.2f);
+
+            DressPerimeterBlock(backdrop);
+        }
+
+        // The visual streets are close enough to read from the playable loop, so they
+        // need ordinary city clutter rather than only buildings and parked cars.
+        static void DressPerimeterBlock(Transform backdrop)
+        {
+            // Four-and-a-half-metre far sidewalks have a curb-fixture lane, a clear
+            // central walking lane, and a building-side furniture lane.
+            float rearFarCurb = OutD1 + 9.4f;
+            float eastFarCurb = OutW1 + 9.4f;
+            float westFarCurb = OutW0 - 9.4f;
+            float rearFarWall = OutD1 + 13f;
+            float eastFarWall = OutW1 + 13f;
+            float westFarWall = OutW0 - 13f;
+
+            // Rear near pavement: repeated curb fixtures bridge the longer gaps, while
+            // the furniture stays in separated clusters instead of forming a prop wall.
+            foreach (float x in new[] { -20f, -9f, 5f, 17f, 36f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(x, 0.12f, OutD1 + 1.64f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(-28f, 0.12f, OutD1 + 1.55f), 25f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkBench_01", new Vector3(-3f, 0.12f, OutD1 + 0.78f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Rubbish_Bin_02", new Vector3(-1.45f, 0.12f, OutD1 + 0.72f), 20f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Mailbox_01", new Vector3(7.2f, 0.12f, OutD1 + 0.74f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Newspaper_02", new Vector3(14f, 0.12f, OutD1 + 0.7f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(21f, 0.12f, OutD1 + 0.7f), 25f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Trashbin_01", new Vector3(24.8f, 0.12f, OutD1 + 0.72f), 335f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_01", new Vector3(31f, 0.12f, OutD1 + 0.72f), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_TrashBag_02", new Vector3(32.4f, 0.12f, OutD1 + 0.72f), 35f);
+
+            // Rear far pavement: a small transit/commercial strip against the flats.
+            foreach (float x in new[] { -6f, 10f, 26f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(x, 0.12f, rearFarCurb));
+            PlaceBackdropProp(backdrop, "SM_Prop_BusStop_01", new Vector3(-15f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Rubbish_Bin_01", new Vector3(-11.7f, 0.12f, rearFarWall), 15f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Phones_01", new Vector3(-4f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Newspaper_02", new Vector3(0.2f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ATM_01", new Vector3(8f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkBench_01", new Vector3(13.2f, 0.12f, rearFarWall));
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_02", new Vector3(18f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Cafe_Sign_Outdoor_01", new Vector3(26f, 0.12f, rearFarWall), 155f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Mailbox_01", new Vector3(31f, 0.12f, rearFarWall), 180f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(-30f, 0.12f, rearFarWall), 330f);
+
+            // East side: delivery/service clutter on the near walk, public furniture
+            // against the opposite shop row. Keep the road itself clear.
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(OutW1 + 1.55f, 0.12f, -10f), 25f);
+            foreach (float z in new[] { -5f, 6.5f, 19f, 30f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(OutW1 + 1.64f, 0.12f, z), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_PowerBox_01", new Vector3(OutW1 + 0.75f, 0.12f, -1f), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_TrashBag_01", new Vector3(OutW1 + 0.68f, 0.12f, 5.2f), 35f);
+            PlaceBackdropProp(backdrop, "SM_Prop_TrashBag_03", new Vector3(OutW1 + 0.72f, 0.12f, 6.15f), 300f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Warehouse_Pallet_Stacked_02", new Vector3(OutW1 + 0.72f, 0.12f, 11f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Rubbish_Bin_03", new Vector3(OutW1 + 0.72f, 0.12f, 16f), 25f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_02", new Vector3(OutW1 + 0.72f, 0.12f, 22f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(OutW1 + 0.75f, 0.12f, 27f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Mailbox_01", new Vector3(OutW1 + 0.72f, 0.12f, 34.5f), 270f);
+
+            foreach (float z in new[] { -7f, 6f, 20f, 30.5f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(eastFarCurb, 0.12f, z), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(eastFarWall, 0.12f, -9f), 25f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Phones_01", new Vector3(eastFarWall, 0.12f, 1f), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Trashbin_02", new Vector3(eastFarWall, 0.12f, 7f), 20f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkBench_01", new Vector3(eastFarWall, 0.12f, 13f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Newspaper_02", new Vector3(eastFarWall, 0.12f, 18f), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Cafe_Sign_Outdoor_01", new Vector3(eastFarWall, 0.12f, 23.5f), 255f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_01", new Vector3(eastFarWall, 0.12f, 29f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Rubbish_Bin_02", new Vector3(eastFarWall, 0.12f, 31.5f), 15f);
+
+            // West side: this is the most exposed perimeter in the player views, so
+            // use curb rhythm along the full run and several small residential clusters.
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(OutW0 - 1.55f, 0.12f, -10f), 25f);
+            foreach (float z in new[] { -2f, 4.5f, 17f, 29f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(OutW0 - 1.64f, 0.12f, z), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Trashbin_01", new Vector3(OutW0 - 0.75f, 0.12f, 1f), 20f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Newspaper_02", new Vector3(OutW0 - 0.75f, 0.12f, 6f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkBench_01", new Vector3(OutW0 - 0.78f, 0.12f, 13f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Mailbox_01", new Vector3(OutW0 - 0.75f, 0.12f, 19f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_01", new Vector3(OutW0 - 0.72f, 0.12f, 26f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_TrashBag_01", new Vector3(OutW0 - 0.7f, 0.12f, 27.7f), 320f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Cafe_Sign_Outdoor_01", new Vector3(OutW0 - 0.72f, 0.12f, 32f), 75f);
+
+            foreach (float z in new[] { -7f, 7f, 22f, 32f })
+                PlaceBackdropProp(backdrop, "SM_Prop_ParkingMeter_01", new Vector3(westFarCurb, 0.12f, z), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Hydrant_01", new Vector3(westFarWall, 0.12f, -10f), 25f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Phones_01", new Vector3(westFarWall, 0.12f, -2f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ParkBench_01", new Vector3(westFarWall, 0.12f, 4f), 270f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_02", new Vector3(westFarWall, 0.12f, 8f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Rubbish_Bin_03", new Vector3(westFarWall, 0.12f, 11f), 15f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Newspaper_02", new Vector3(westFarWall, 0.12f, 16f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_ATM_01", new Vector3(westFarWall, 0.12f, 21f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Cafe_Sign_Outdoor_01", new Vector3(westFarWall, 0.12f, 27f), 105f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Planter_02", new Vector3(westFarWall, 0.12f, 31f), 90f);
+            PlaceBackdropProp(backdrop, "SM_Prop_Mailbox_01", new Vector3(westFarWall, 0.12f, 32.5f), 90f);
+        }
+
+        static GameObject PlaceBackdropProp(Transform parent, string name, Vector3 position, float yaw = 0f)
+        {
+            var go = PlaceSynty(name, position, yaw);
+            if (go != null) go.transform.SetParent(parent, true);
+            return go;
+        }
+
+        static void CreatePerimeterLamp(string name, Vector3 position, float yaw, Transform parent, float intensity = 3.9f)
+        {
+            var pole = PlaceBackdropProp(parent, "SM_Prop_Streetlight_02", position, yaw);
+            if (pole == null) return;
+            pole.name = name;
+            MakeEmissive(pole);
+            var bounds = GeometryBounds(pole);
+            var lamp = new GameObject($"{name}_Light").AddComponent<Light>();
+            lamp.transform.SetParent(root, false);
+            lamp.type = LightType.Spot;
+            lamp.transform.position = new Vector3(bounds.center.x, bounds.max.y - 0.35f, bounds.center.z);
+            lamp.transform.rotation = Quaternion.Euler(90f, yaw, 0f);
+            lamp.spotAngle = 88f;
+            lamp.innerSpotAngle = 38f;
+            lamp.color = new Color(1f, 0.55f, 0.22f);
+            lamp.intensity = intensity;
+            lamp.range = 8.5f;
+            lamp.shadows = LightShadows.None;
+        }
+
         static readonly string[] ShopFronts = { "SM_Bld_Shop_01", "SM_Bld_Shop_02", "SM_Bld_Shop_03",
                                                 "SM_Bld_Shop_04", "SM_Bld_Shop_05", "SM_Bld_Shop_06" };
         static readonly string[] Apartments = { "SM_Bld_Apartment_Stack_01", "SM_Bld_Apartment_Stack_02" };
 
         static void StreetDressing()
         {
-            // Lamp posts along the shop-side pavement: glowing head + a real light
-            // under the arm, every pole (URP Forward+ handles the count)
+            // Lamp posts along the far pavement: glowing head + a real light under
+            // the arm, with the central facade sightline intentionally left open.
             for (float x = -34f; x <= W + 34f; x += 12f)
             {
-                var pole = PlaceSynty("SM_Prop_LightPole_Base_01", new Vector3(x, 0.12f, -1.3f));
+                if (x > -6f && x < W + 6f) continue; // preserve the storefront sightline
+                // Poles sit on the far pavement and reach back over the two-lane road.
+                // Keeping their full arm twelve metres off the facade guarantees that
+                // no lamp geometry can pass through the shop roof or sign.
+                var pole = PlaceSynty("SM_Prop_LightPole_Base_01", new Vector3(x, 0.12f, -12.5f), 180f);
                 if (pole == null) continue;
                 MakeEmissive(pole);
                 var pb = GeometryBounds(pole);
-                PointLight($"LampGlow_{x}", new Vector3(x, pb.max.y - 0.6f, pb.max.z - 0.4f),
-                    new Color(1f, 0.72f, 0.4f), 1.5f, 9f);
+                // Downward SPOT, not a point: lamps make cones and pools, not a wash
+                var lamp = new GameObject($"LampSpot_{x}").AddComponent<Light>();
+                lamp.transform.SetParent(root, false);
+                lamp.type = LightType.Spot;
+                lamp.transform.position = new Vector3(x, pb.max.y - 0.5f, pb.min.z + 0.4f);
+                lamp.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+                lamp.spotAngle = 100f;
+                lamp.innerSpotAngle = 45f;
+                lamp.color = new Color(1f, 0.62f, 0.28f); // sodium orange
+                lamp.intensity = 5.5f;
+                lamp.range = 9f;
             }
 
             // Parked cars down the road, outside the boundary
-            PlaceSynty("SM_Veh_Car_Muscle_01", new Vector3(-16f, 0.02f, -4.4f), 88f);
             PlaceSynty("SM_Veh_Car_Van_01", new Vector3(-28f, 0.02f, -3.9f), 272f);
-            PlaceSynty("SM_Veh_Car_Sedan_01", new Vector3(W + 16f, 0.02f, -4.2f), 90f);
             PlaceSynty("SM_Veh_Car_Taxi_01", new Vector3(W + 27f, 0.02f, -4f), 268f);
+            PlaceSynty("SM_Veh_Car_Small_01", new Vector3(-7f, 0.02f, -9.5f), 270f);
+            PlaceSynty("SM_Veh_Car_Medium_01", new Vector3(W + 10f, 0.02f, -9.4f), 88f);
 
-            PlaceSynty("SM_Prop_BusStop_01", new Vector3(-12f, 0.12f, -7.4f));
+            PlaceSynty("SM_Prop_BusStop_01", new Vector3(-12f, 0.12f, OutD0 - 0.72f));
+
+            // Opposite pavement: an urban sequence that carries beyond both frame
+            // edges. Large objects stay well separated; small curb fixtures fill the
+            // visual gaps without spilling into either traffic lane.
+            float mainStreetFurnitureZ = OutD0 - 0.68f;
+            PlaceSynty("SM_Prop_Planter_01", new Vector3(-38f, 0.12f, mainStreetFurnitureZ), 180f);
+            PlaceSynty("SM_Prop_Mailbox_01", new Vector3(-31f, 0.12f, mainStreetFurnitureZ), 180f);
+            PlaceSynty("SM_Prop_Newspaper_02", new Vector3(-25f, 0.12f, mainStreetFurnitureZ), 180f);
+            PlaceSynty("SM_Prop_Trashbin_01", new Vector3(-19f, 0.12f, mainStreetFurnitureZ), 15f);
+            PlaceSynty("SM_Prop_Hydrant_01", new Vector3(-8f, 0.12f, mainStreetFurnitureZ), 25f);
+            PlaceSynty("SM_Prop_Phones_01", new Vector3(-3.5f, 0.12f, mainStreetFurnitureZ));
+            PlaceSynty("SM_Prop_Planter_02", new Vector3(W + 1f, 0.12f, mainStreetFurnitureZ), 180f);
+            PlaceSynty("SM_Prop_Newspaper_02", new Vector3(W + 6f, 0.12f, mainStreetFurnitureZ), 180f);
+            PlaceSynty("SM_Prop_Hydrant_01", new Vector3(W + 9f, 0.12f, mainStreetFurnitureZ), 335f);
+            PlaceSynty("SM_Prop_Cafe_Sign_Outdoor_01", new Vector3(W + 19f, 0.12f, mainStreetFurnitureZ), 165f);
+            PlaceSynty("SM_Prop_Rubbish_Bin_02", new Vector3(W + 21f, 0.12f, mainStreetFurnitureZ), 15f);
+            PlaceSynty("SM_Prop_ParkBench_01", new Vector3(W + 31f, 0.12f, mainStreetFurnitureZ), 180f);
+
+            foreach (float x in new[] { -35f, -26f, -17f, -7f, 0f, W + 5f, W + 16f, W + 27f, W + 38f })
+                PlaceSynty("SM_Prop_ParkingMeter_01", new Vector3(x, 0.12f, -12.22f), 180f);
+
+            // Small storefront neons punctuate the street ring. They are kept across
+            // the road or beyond the playable fence, so they add depth without noise
+            // around the interaction route.
+            var westNeon = PlaceSyntyDecorative("SM_Sign_Neon_Open_01", new Vector3(-12f, 1.35f, OutD0 - 1.15f));
+            var eastNeon = PlaceSyntyDecorative("SM_Sign_Neon_Open_02", new Vector3(W + 24f, 1.45f, OutD0 - 1.15f));
+            var rearNeon = PlaceSyntyDecorative("SM_Sign_Neon_Open_04", new Vector3(7.2f, 1.45f, OutD1 + 11.75f), 180f);
+            MakeEmissive(westNeon);
+            MakeEmissive(eastNeon);
+            MakeEmissive(rearNeon);
 
             // Painted crossings only if the Synty road tiles (with real crossings) are absent
             if (SyntyPrefab("SM_Env_Road_Lines_01") == null)
@@ -761,21 +1709,9 @@ namespace RaccoonHeist.World.Editor
             string[] trees = { "SM_Env_Tree_01", "SM_Env_Tree_02", "SM_Env_Tree_03" };
             int t = 0;
             foreach (float x in new[] { -28f, -16f, W + 16f, W + 28f })
-                PlaceSynty(trees[t++ % 3], new Vector3(x, 0.12f, -7.4f), t * 77f);
-            PlaceSynty(trees[0], new Vector3(-22f, 0.12f, -1f), 30f);
-            PlaceSynty(trees[1], new Vector3(W + 22f, 0.12f, -1f), 130f);
-
-            // Traffic lights at the two crossings: the head hangs from the pole's
-            // measured arm tip (head pivot is at its top), not from thin air
-            foreach (float x in new[] { -7.5f, 17.5f })
-            {
-                var pole = PlaceSynty("SM_Prop_LightPole_Base_01", new Vector3(x, 0.12f, -1.3f), 180f);
-                if (pole == null) continue;
-                MakeEmissive(pole);
-                var pb = GeometryBounds(pole);
-                var head = PlaceSynty("SM_Prop_TrafficLight_02", new Vector3(x, pb.max.y - 1.45f, pb.min.z + 0.55f), 180f);
-                MakeEmissive(head);
-            }
+                PlaceSynty(trees[t++ % 3], new Vector3(x, 0.12f, OutD0 - 0.72f), t * 77f);
+            PlaceSynty(trees[0], new Vector3(-22f, 0.12f, -0.42f), 30f);
+            PlaceSynty(trees[1], new Vector3(W + 22f, 0.12f, -0.42f), 130f);
 
             // Rooftop clutter on OUR roof — cover for the roof route (skylight at x 6.5-7.5, z 10-11)
             PlaceSynty("SM_Prop_Vents_Straight_01", new Vector3(3.5f, H + 0.1f, 6f), 20f);
@@ -784,8 +1720,8 @@ namespace RaccoonHeist.World.Editor
             if (PlaceSynty("SM_Prop_Aircon_01", new Vector3(4.5f, H + 0.1f, 14.5f), 45f) == null)
                 PlaceSynty("SM_Prop_AirCon_01", new Vector3(4.5f, H + 0.1f, 14.5f), 45f);
 
-            // Security cameras (props for now — maybe a mechanic later) + alley drainpipe
-            PlaceSynty("SM_Prop_SecurityCamera_01", new Vector3(3f, 2.45f, -0.28f), 180f);
+            // Security cameras stay on the service routes; the front camera used to
+            // puncture the sign fascia and made the rebuilt facade look unfinished.
             PlaceSynty("SM_Prop_SecurityCamera_01", new Vector3(9.6f, 2.4f, StorageZ1 + T + 0.05f));
             PlaceSynty("SM_Prop_Pipe_Small_01", new Vector3(5.4f, 0f, StorageZ1 + T + 0.1f));
         }
@@ -806,7 +1742,9 @@ namespace RaccoonHeist.World.Editor
             box.size = max - min;
         }
 
-        static void BackdropRow(Transform parent, string[] prefabs, bool alongX, float fixedCoord, float from, float to, float yaw, float hMin, float hMax, float gapMin = 1.5f, float gapMax = 5f, bool dressShopfront = false, bool emissiveWindows = false)
+        static void BackdropRow(Transform parent, string[] prefabs, bool alongX, float fixedCoord, float from, float to,
+            float yaw, float hMin, float hMax, float gapMin = 1.5f, float gapMax = 5f,
+            bool dressShopfront = false, bool emissiveWindows = false, float facadeEdge = float.NaN)
         {
             bool usePrefabs = prefabs != null && SyntyPrefab(prefabs[0]) != null;
             float cursor = from;
@@ -823,6 +1761,19 @@ namespace RaccoonHeist.World.Editor
                     float shift = cursor - (alongX ? bb.min.x : bb.min.z);
                     b.transform.position += (alongX ? Vector3.right : Vector3.forward) * shift;
                     w = alongX ? bb.size.x : bb.size.z;
+
+                    // Prefab pivots are not facade pivots. Align the renderer edge
+                    // explicitly so apartment geometry cannot consume the sidewalk.
+                    if (!float.IsNaN(facadeEdge))
+                    {
+                        bb = GeometryBounds(b);
+                        if (Mathf.Approximately(yaw, 180f))
+                            b.transform.position += Vector3.forward * (facadeEdge - bb.min.z);
+                        else if (Mathf.Approximately(yaw, 270f))
+                            b.transform.position += Vector3.right * (facadeEdge - bb.min.x);
+                        else if (Mathf.Approximately(yaw, 90f))
+                            b.transform.position += Vector3.right * (facadeEdge - bb.max.x);
+                    }
                 }
                 else
                 {
@@ -851,7 +1802,9 @@ namespace RaccoonHeist.World.Editor
                 }
 
                 if (usePrefabs && emissiveWindows) MakeEmissive(b);
-                DisableShadows(b); // backdrop must never shadow the play area's moonlight
+                // Near (prefab) buildings DO cast moon shadows — shadow shapes are what
+                // make the light feel real. Only the far procedural towers skip them.
+                if (!usePrefabs) DisableShadows(b);
                 b.transform.SetParent(parent, true);
                 cursor += w + Random.Range(gapMin, gapMax);
                 i++;
@@ -903,8 +1856,8 @@ namespace RaccoonHeist.World.Editor
             }
             mat.EnableKeyword("_EMISSION");
             if (mat.HasProperty("_Enable_Emission")) mat.SetFloat("_Enable_Emission", 1f);
-            // warm and dimmed — window glow, not neon
-            if (mat.HasProperty("_Emission_Color")) mat.SetColor("_Emission_Color", new Color(0.75f, 0.62f, 0.42f));
+            // warm, just over bloom threshold — windows halo softly instead of glowing flat
+            if (mat.HasProperty("_Emission_Color")) mat.SetColor("_Emission_Color", new Color(1.35f, 1.1f, 0.72f));
             matCache[key] = mat;
             return mat;
         }
@@ -941,16 +1894,25 @@ namespace RaccoonHeist.World.Editor
 
         static void BuildLighting()
         {
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.06f, 0.07f, 0.11f); // darker base; lamps and windows carry the scene
+            // Trilight gives upward faces cold moon fill while undersides and alley
+            // recesses stay dark. Flat ambient was the main source of the cardboard look.
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = new Color(0.085f, 0.105f, 0.17f);
+            RenderSettings.ambientEquatorColor = new Color(0.042f, 0.052f, 0.09f);
+            RenderSettings.ambientGroundColor = new Color(0.016f, 0.019f, 0.032f);
+            RenderSettings.ambientIntensity = 1f;
+            RenderSettings.defaultReflectionMode = DefaultReflectionMode.Skybox;
+            RenderSettings.reflectionIntensity = 0.34f;
+            RenderSettings.reflectionBounces = 1;
 
             var moon = new GameObject("Moonlight").AddComponent<Light>();
             moon.transform.SetParent(root, false);
             moon.type = LightType.Directional;
-            moon.transform.rotation = Quaternion.Euler(40f, 15f, 0f);
-            moon.color = new Color(0.62f, 0.7f, 1f);
-            moon.intensity = 0.6f;
+            moon.transform.rotation = Quaternion.Euler(48f, -28f, 0f);
+            moon.color = new Color(0.55f, 0.66f, 1f);
+            moon.intensity = 0.86f;
             moon.shadows = LightShadows.Soft;
+            moon.shadowStrength = 0.82f;
 
             // Real night sky: stars, painted moon, warm city-glow at the horizon
             string skyPath = "Assets/Materials/Greybox/NightSkyPano.mat";
@@ -961,39 +1923,268 @@ namespace RaccoonHeist.World.Editor
                 AssetDatabase.CreateAsset(sky, skyPath);
             }
             sky.SetTexture("_MainTex", TexNightSky);
-            sky.SetFloat("_Exposure", 1f);
+            sky.SetFloat("_Exposure", 0.8f);
             RenderSettings.skybox = sky;
             RenderSettings.sun = moon;
 
-            // Night haze: thicker fog matched to the horizon glow
+            // Blue urban haze separates foreground, block, and skyline into readable
+            // depth layers without putting translucent cone geometry in the scene.
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.Exponential;
-            RenderSettings.fogColor = new Color(0.055f, 0.06f, 0.095f);
-            RenderSettings.fogDensity = 0.016f;
+            RenderSettings.fogColor = new Color(0.095f, 0.115f, 0.18f);
+            RenderSettings.fogDensity = 0.038f;
 
             BuildAtmosphere();
 
             // Harold's lamp glow spilling out of the back room — his "location beacon"
             PointLight("BackRoomLamp", new Vector3(2.5f, 2.1f, D + T + 4f - 0.6f), new Color(1f, 0.62f, 0.32f), 1.6f, 6f);
-            PointLight("FridgeGlow", new Vector3(1.8f, 1.9f, (D + 0f) / 2f), new Color(0.65f, 0.85f, 1f), 1.1f, 4f);
+            PointLight("FridgeGlow", new Vector3(1.8f, 1.9f, (D + 0f) / 2f), new Color(0.65f, 0.85f, 1f), 1.4f, 5f);
             PointLight("VentGlow", new Vector3(W - 0.25f, 0.45f, 1.25f), new Color(0.4f, 1f, 0.5f), 0.8f, 2f);
-            // Bare bulb in the storage room — dim, warm, horror-pantry mood
-            PointLight("StorageBulb", new Vector3((StorageX0 + StorageX1) / 2f, 2.5f, D + 2.5f), new Color(1f, 0.72f, 0.42f), 1.3f, 6f);
-            // Outside: dim alley bulb over the dumpster, warm glow from the den hole
-            PointLight("AlleyLight", new Vector3(9.5f, 3.2f, StorageZ1 + 1.5f), new Color(1f, 0.68f, 0.38f), 1.2f, 7f);
+            // Overnight safety lights — the diegetic excuse for a readable interior
+            PointLight("ShopNightLight_A", new Vector3(4.5f, 2.7f, 5.5f), new Color(0.55f, 0.68f, 0.72f), 0.5f, 8f);
+            PointLight("ShopNightLight_B", new Vector3(10f, 2.7f, 11f), new Color(0.55f, 0.68f, 0.72f), 0.5f, 8f);
+            // Bare bulb in the storage room — dim, warm, horror-pantry mood, slight waver
+            var bulb = PointLight("StorageBulb", new Vector3((StorageX0 + StorageX1) / 2f, 2.5f, D + 2.5f), new Color(1f, 0.72f, 0.42f), 1.3f, 6f);
+            var bulbFlicker = bulb.gameObject.AddComponent<FlickeringLight>();
+            bulbFlicker.flickerAmount = 0.18f;
+            bulbFlicker.dropoutChance = 0.03f;
+            // Outside: dying fluorescent over the dumpster, warm glow from the den hole.
+            // A shadowed spot makes the alley alternate between safe pools and darkness.
+            SpotLight("AlleyLight", new Vector3(9.6f, 2.45f, StorageZ1 + T + 0.95f),
+                new Vector3(0f, -0.78f, 1f), new Color(1f, 0.62f, 0.30f), 5.6f, 7.5f, 72f, true);
             PointLight("DenGlow", new Vector3(6.9f, 0.35f, OutD1 - 0.4f), new Color(1f, 0.62f, 0.3f), 1f, 3f);
+            PointLight("AlleyAmbientFill", new Vector3(7f, 1.1f, 23f), new Color(0.32f, 0.43f, 0.78f), 2.35f, 11.5f);
+            PointLight("AlleyWarmBounce", new Vector3(11.1f, 0.9f, 21.8f), new Color(0.86f, 0.38f, 0.17f), 0.72f, 6.5f);
 
-            // Streetlamp outside, shining in through the front window
-            var street = new GameObject("StreetLampSpot").AddComponent<Light>();
-            street.transform.SetParent(root, false);
-            street.type = LightType.Spot;
-            street.transform.position = new Vector3(W / 2f + 1f, 2.6f, -2.6f);
-            street.transform.rotation = Quaternion.LookRotation(new Vector3(0f, -0.45f, 1f));
-            street.spotAngle = 95f;
-            street.range = 16f;
-            street.color = new Color(1f, 0.62f, 0.28f);
-            street.intensity = 5f;
-            street.shadows = LightShadows.Soft;
+            SpotLight("PassageSecurityLight", new Vector3(W + 0.72f, 2.65f, 7.2f),
+                new Vector3(1f, -0.9f, 0.08f), new Color(0.48f, 0.70f, 1f), 6.4f, 9f, 74f, true);
+            SpotLight("PassageUtilityLight_N", new Vector3(W + 0.72f, 2.35f, 16.2f),
+                new Vector3(1f, -0.92f, -0.12f), new Color(0.40f, 0.62f, 1f), 5.2f, 8f, 70f, false);
+            PointLight("PassageAmbientFill", new Vector3(16.5f, 1.1f, 11f), new Color(0.30f, 0.44f, 0.80f), 2.4f, 11.5f);
+            PointLight("PassageWarmBounce", new Vector3(15.3f, 0.9f, 16.5f), new Color(0.78f, 0.36f, 0.18f), 0.66f, 6.5f);
+
+            SpotLight("AlleySecondaryLight", new Vector3(2.2f, 2.42f, D + T + 4f + T + 0.95f),
+                new Vector3(0f, -0.82f, 1f), new Color(1f, 0.54f, 0.24f), 5f, 7f, 68f, false);
+
+            // The entrance pool now originates at the visible wall fixture instead
+            // of floating above the street and blasting through the whole facade.
+            SpotLight("EntranceCanopyPool", new Vector3(EntranceX, 2.10f, -0.53f),
+                new Vector3(0f, -0.90f, -0.28f), new Color(1f, 0.62f, 0.28f), 4.2f, 6.5f, 68f, true);
+            PointLight("StreetAmbientFill", new Vector3(7f, 1.25f, -4.5f), new Color(0.25f, 0.34f, 0.62f), 0.42f, 10f);
+            PointLight("EntranceVestibuleGlow", new Vector3(EntranceX, 1.45f, 0.35f), new Color(1f, 0.55f, 0.24f), 1.25f, 4.2f);
+            PointLight("WindowDisplayWarm", new Vector3(3.55f, 1.55f, 0.55f), new Color(1f, 0.52f, 0.25f), 1.1f, 4.2f);
+            PointLight("WindowDisplayCool", new Vector3(10.45f, 1.55f, 0.55f), new Color(0.25f, 0.55f, 1f), 0.85f, 4.2f);
+
+            // Local glow around the signs lets their colour touch nearby masonry and
+            // wet pavement; small ranges keep the palette intentional.
+            PointLight("OpenSignGlow", new Vector3(2.05f, 1.35f, -0.18f), new Color(0.15f, 0.75f, 1f), 0.8f, 3.3f);
+            PointLight("RaccoonHeistSignGlow", new Vector3(7f, 2.55f, -0.42f), new Color(0.12f, 0.72f, 1f), 0.9f, 5f);
+            PointLight("WestNeonGlow", new Vector3(-12f, 1.5f, OutD0 - 0.7f), new Color(0.95f, 0.12f, 0.72f), 0.65f, 3.4f);
+            PointLight("EastNeonGlow", new Vector3(W + 24f, 1.5f, OutD0 - 0.7f), new Color(0.12f, 0.72f, 1f), 0.6f, 3.4f);
+            PointLight("RearNeonGlow", new Vector3(7.2f, 1.5f, OutD1 + 11.3f), new Color(0.8f, 0.14f, 1f), 0.55f, 3.8f);
+
+            // Soft, stable reflected city glow connects the perimeter lamp pools. These fills are
+            // intentionally outside the storefront zone and never flicker, keeping
+            // the night exposure stable while the surrounding block remains legible.
+            PointLight("PerimeterAmbient_Rear", new Vector3(7f, 1.2f, OutD1 + 3.5f), new Color(0.20f, 0.31f, 0.60f), 0.66f, 10f);
+            PointLight("PerimeterAmbient_East", new Vector3(OutW1 + 3.5f, 1.2f, 11f), new Color(0.18f, 0.30f, 0.62f), 0.64f, 10f);
+            PointLight("PerimeterAmbient_West", new Vector3(OutW0 - 3.5f, 1.2f, 12f), new Color(0.24f, 0.28f, 0.54f), 0.58f, 9f);
+            PointLight("PerimeterAmbient_FarWalk", new Vector3(7f, 1.2f, OutD0 + 0.7f), new Color(0.22f, 0.30f, 0.56f), 0.56f, 9f);
+
+            // Low, stable bounce on the opposite furniture lanes prevents props from
+            // vanishing between the stronger pools cast by the streetlights.
+            PointLight("RearFarWalkFill_W", new Vector3(-8f, 1.35f, OutD1 + 12f), new Color(0.22f, 0.34f, 0.68f), 0.9f, 9f);
+            PointLight("RearFarWalkFill_E", new Vector3(20f, 1.35f, OutD1 + 12f), new Color(0.25f, 0.36f, 0.68f), 0.9f, 9f);
+            PointLight("EastFarWalkFill_S", new Vector3(OutW1 + 12f, 1.35f, 4f), new Color(0.20f, 0.34f, 0.70f), 0.9f, 9f);
+            PointLight("EastFarWalkFill_N", new Vector3(OutW1 + 12f, 1.35f, 25f), new Color(0.24f, 0.34f, 0.66f), 0.9f, 9f);
+            PointLight("WestFarWalkFill_S", new Vector3(OutW0 - 12f, 1.35f, 4f), new Color(0.27f, 0.31f, 0.62f), 0.85f, 9f);
+            PointLight("WestFarWalkFill_N", new Vector3(OutW0 - 12f, 1.35f, 25f), new Color(0.23f, 0.34f, 0.67f), 0.85f, 9f);
+        }
+
+        static void BuildEnvironmentAudio()
+        {
+            const string ambiencePath = "Assets/Audio/Environment/city_ambience.mp3";
+            var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(ambiencePath);
+            if (clip == null)
+            {
+                Debug.LogWarning($"Raccoon Heist: exterior ambience clip is missing at {ambiencePath}.");
+                return;
+            }
+
+            var ambience = new GameObject("ExteriorCityAmbience");
+            ambience.transform.SetParent(root, false);
+            var source = ambience.AddComponent<AudioSource>();
+            source.clip = clip;
+            source.loop = true;
+            source.playOnAwake = false;
+            source.volume = 0.55f;
+            source.spatialBlend = 0f; // A city bed surrounds the listener; it is not one point in the street.
+            source.dopplerLevel = 0f;
+            source.priority = 96;
+
+            // These are the walkable interior volumes, inset slightly from their walls.
+            // The roof and every exterior route remain outside the zones and keep the city audible.
+            var interiorZones = new[]
+            {
+                new Bounds(new Vector3(W * 0.5f, 1.38f, D * 0.5f), new Vector3(W - 0.1f, 3.55f, D - 0.1f)),
+                new Bounds(new Vector3(1.5f, 1.38f, D + T + ShopConstants.BackRoomDepth * 0.5f),
+                    new Vector3(2.9f, 3.55f, ShopConstants.BackRoomDepth - 0.1f)),
+                new Bounds(new Vector3((StorageX0 + StorageX1) * 0.5f, 1.38f, D + T + ShopConstants.StorageDepth * 0.5f),
+                    new Vector3(ShopConstants.StorageWidth - 0.4f, 3.55f, ShopConstants.StorageDepth - 0.1f))
+            };
+            var controller = ambience.AddComponent<ExteriorAmbienceController>();
+            controller.Configure(0.55f, 0.8f, interiorZones);
+
+            bool outsideAudible = !controller.IsInteriorPosition(new Vector3(EntranceX, 0.35f, -2f));
+            bool shopMuted = controller.IsInteriorPosition(new Vector3(EntranceX, 0.35f, 2f));
+            bool backRoomMuted = controller.IsInteriorPosition(new Vector3(1.5f, 0.35f, D + T + 2f));
+            bool storageMuted = controller.IsInteriorPosition(new Vector3(8f, 0.35f, D + T + 2.5f));
+            if (outsideAudible && shopMuted && backRoomMuted && storageMuted)
+                Debug.Log("Raccoon Heist: exterior ambience threshold check passed (outside audible; all interiors muted).");
+            else
+                Debug.LogWarning("Raccoon Heist: exterior ambience threshold check failed; inspect configured interior bounds.");
+        }
+
+        static void BuildShopAlarm()
+        {
+            const string alarmPath = "Assets/Audio/Environment/security_alarm.mp3";
+            var alarmClip = AssetDatabase.LoadAssetAtPath<AudioClip>(alarmPath);
+            if (alarmClip == null)
+                Debug.LogWarning($"Raccoon Heist: storefront alarm clip is missing at {alarmPath}.");
+
+            var alarmSystem = new GameObject("ShopAlarmSystem");
+            alarmSystem.transform.SetParent(root, false);
+
+            var alarmSpeaker = new GameObject("AlarmSpeaker");
+            alarmSpeaker.transform.SetParent(alarmSystem.transform, false);
+            alarmSpeaker.transform.localPosition = new Vector3(EntranceX, 2.65f, D * 0.5f);
+            var alarmSource = alarmSpeaker.AddComponent<AudioSource>();
+            alarmSource.clip = alarmClip;
+            alarmSource.loop = true;
+            alarmSource.playOnAwake = false;
+            alarmSource.volume = 0.85f;
+            alarmSource.spatialBlend = 0.6f;
+            alarmSource.minDistance = 2f;
+            alarmSource.maxDistance = 32f;
+            alarmSource.rolloffMode = AudioRolloffMode.Linear;
+            alarmSource.dopplerLevel = 0f;
+            alarmSource.priority = 72;
+
+            var beaconRotors = new[]
+            {
+                CreateAlarmBeacon(alarmSystem.transform, "AlarmBeacon_Front", new Vector3(3.1f, 2.70f, 4f), 20f),
+                CreateAlarmBeacon(alarmSystem.transform, "AlarmBeacon_Rear", new Vector3(10.9f, 2.70f, 12f), 200f)
+            };
+
+            var door = root.Find("EntranceDoorPivot")?.GetComponent<HingedDoor>();
+            if (door == null)
+                Debug.LogWarning("Raccoon Heist: storefront alarm could not find EntranceDoorPivot/HingedDoor.");
+            alarmSystem.AddComponent<ShopAlarmController>().Configure(door, alarmSource, beaconRotors);
+        }
+
+        static Transform CreateAlarmBeacon(Transform parent, string name, Vector3 localPosition, float initialYaw)
+        {
+            var beacon = new GameObject(name).transform;
+            beacon.SetParent(parent, false);
+            beacon.localPosition = localPosition;
+
+            var housingMaterial = Mat("AlarmBeaconHousing", new Color(0.09f, 0.10f, 0.12f), 0.28f);
+            var reflectorMaterial = Mat("AlarmBeaconReflector", new Color(0.56f, 0.58f, 0.62f), 0.88f);
+            var redMaterial = TransparentMat("AlarmBeaconRed", new Color(0.46f, 0.008f, 0.004f, 0.46f), 0.74f);
+            redMaterial.EnableKeyword("_EMISSION");
+            redMaterial.SetColor("_EmissionColor", new Color(1.15f, 0.012f, 0.006f));
+            redMaterial.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            var hotLensMaterial = EmissiveMat("AlarmBeaconHotLens", new Color(1f, 0.055f, 0.025f),
+                new Color(18f, 0.12f, 0.035f));
+
+            var ceilingMount = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ceilingMount.name = "CeilingMount";
+            ceilingMount.transform.SetParent(beacon, false);
+            ceilingMount.transform.localPosition = new Vector3(0f, 0.18f, 0f);
+            ceilingMount.transform.localScale = new Vector3(0.24f, 0.06f, 0.24f);
+            ApplyMat(ceilingMount, housingMaterial);
+            Object.DestroyImmediate(ceilingMount.GetComponent<Collider>());
+
+            var rim = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            rim.name = "BeaconRim";
+            rim.transform.SetParent(beacon, false);
+            rim.transform.localScale = new Vector3(0.22f, 0.025f, 0.22f);
+            ApplyMat(rim, housingMaterial);
+            Object.DestroyImmediate(rim.GetComponent<Collider>());
+
+            var rotor = new GameObject("Rotor").transform;
+            rotor.SetParent(beacon, false);
+            rotor.localRotation = Quaternion.Euler(0f, initialYaw, 0f);
+
+            var dome = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            dome.name = "RedBeaconDome";
+            dome.transform.SetParent(rotor, false);
+            dome.transform.localPosition = new Vector3(0f, -0.09f, 0f);
+            dome.transform.localScale = new Vector3(0.23f, 0.14f, 0.23f);
+            ApplyMat(dome, redMaterial);
+            Object.DestroyImmediate(dome.GetComponent<Collider>());
+
+            // The dome is rotationally symmetrical, so rotating it alone reads as a
+            // static red glow. These reflector faces and bright lens panels are aligned
+            // with the two spotlights and turn with the rotor, making the beacon itself
+            // visibly sweep in sync, even when the light pools are outside the camera view.
+            var spindle = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            spindle.name = "ReflectorSpindle";
+            spindle.transform.SetParent(rotor, false);
+            spindle.transform.localPosition = new Vector3(0f, -0.09f, 0f);
+            spindle.transform.localScale = new Vector3(0.025f, 0.05f, 0.025f);
+            ApplyMat(spindle, housingMaterial);
+            Object.DestroyImmediate(spindle.GetComponent<Collider>());
+
+            var frontReflector = Box("Reflector_Front", new Vector3(0f, -0.09f, 0.055f),
+                new Vector3(0.13f, 0.09f, 0.018f), rotor, reflectorMaterial);
+            Object.DestroyImmediate(frontReflector.GetComponent<Collider>());
+            var rearReflector = Box("Reflector_Rear", new Vector3(0f, -0.09f, -0.055f),
+                new Vector3(0.13f, 0.09f, 0.018f), rotor, reflectorMaterial);
+            Object.DestroyImmediate(rearReflector.GetComponent<Collider>());
+
+            var frontLens = Box("HotLens_Front", new Vector3(0f, -0.09f, 0.116f),
+                new Vector3(0.105f, 0.078f, 0.018f), rotor, hotLensMaterial);
+            Object.DestroyImmediate(frontLens.GetComponent<Collider>());
+            var rearLens = Box("HotLens_Rear", new Vector3(0f, -0.09f, -0.116f),
+                new Vector3(0.105f, 0.078f, 0.018f), rotor, hotLensMaterial);
+            Object.DestroyImmediate(rearLens.GetComponent<Collider>());
+
+            var beam = new GameObject("RotatingRedBeam").AddComponent<Light>();
+            beam.transform.SetParent(rotor, false);
+            beam.transform.localPosition = new Vector3(0f, -0.08f, 0.08f);
+            beam.transform.localRotation = Quaternion.LookRotation(new Vector3(0f, -0.18f, 1f));
+            beam.type = LightType.Spot;
+            beam.color = new Color(1f, 0.04f, 0.02f);
+            beam.intensity = 18f;
+            beam.range = 12f;
+            beam.spotAngle = 50f;
+            beam.innerSpotAngle = 18f;
+            beam.shadows = LightShadows.None;
+
+            var reverseBeam = new GameObject("RotatingRedBeam_Reverse").AddComponent<Light>();
+            reverseBeam.transform.SetParent(rotor, false);
+            reverseBeam.transform.localPosition = new Vector3(0f, -0.08f, -0.08f);
+            reverseBeam.transform.localRotation = Quaternion.LookRotation(new Vector3(0f, -0.18f, -1f));
+            reverseBeam.type = LightType.Spot;
+            reverseBeam.color = new Color(1f, 0.025f, 0.012f);
+            reverseBeam.intensity = 14f;
+            reverseBeam.range = 10f;
+            reverseBeam.spotAngle = 44f;
+            reverseBeam.innerSpotAngle = 16f;
+            reverseBeam.shadows = LightShadows.None;
+
+            var localGlow = new GameObject("RedBeaconGlow").AddComponent<Light>();
+            localGlow.transform.SetParent(rotor, false);
+            localGlow.transform.localPosition = new Vector3(0f, -0.10f, 0f);
+            localGlow.type = LightType.Point;
+            localGlow.color = new Color(1f, 0.025f, 0.012f);
+            localGlow.intensity = 4.8f;
+            localGlow.range = 5.5f;
+            localGlow.shadows = LightShadows.None;
+
+            rotor.gameObject.SetActive(false);
+            return rotor;
         }
 
         static Light PointLight(string name, Vector3 pos, Color color, float intensity, float range)
@@ -1008,14 +2199,30 @@ namespace RaccoonHeist.World.Editor
             return light;
         }
 
+        static Light SpotLight(string name, Vector3 pos, Vector3 direction, Color color, float intensity, float range, float angle, bool shadows)
+        {
+            var light = new GameObject(name).AddComponent<Light>();
+            light.transform.SetParent(root, false);
+            light.type = LightType.Spot;
+            light.transform.position = pos;
+            light.transform.rotation = Quaternion.LookRotation(direction.normalized);
+            light.color = color;
+            light.intensity = intensity;
+            light.range = range;
+            light.spotAngle = angle;
+            light.innerSpotAngle = angle * 0.48f;
+            light.shadows = shadows ? LightShadows.Soft : LightShadows.None;
+            return light;
+        }
+
         // Procedural night sky: gradient with city light-pollution at the horizon,
         // stars that thin out low, drifting cloud noise, and a painted moon
-        static Texture2D TexNightSky => EnsureTex("tex_nightsky", (x, y) =>
+        static Texture2D TexNightSky => EnsureTex("tex_nightsky_v3", (x, y) =>
         {
             float v = y / 511f;
             float alt = Mathf.Clamp01((v - 0.5f) * 2f);
-            var horizon = new Color(0.14f, 0.105f, 0.075f);
-            var zenith = new Color(0.012f, 0.018f, 0.045f);
+            var horizon = new Color(0.21f, 0.15f, 0.12f);
+            var zenith = new Color(0.012f, 0.022f, 0.062f);
             Color c = v >= 0.5f
                 ? Color.Lerp(horizon, zenith, Mathf.Sqrt(alt))
                 : Color.Lerp(horizon, new Color(0.01f, 0.01f, 0.015f), (0.5f - v) * 3f);
@@ -1050,36 +2257,38 @@ namespace RaccoonHeist.World.Editor
                 return c;
             }
             var bloom = Get<Bloom>();
-            bloom.intensity.Override(0.5f);
-            bloom.threshold.Override(1f);
-            bloom.scatter.Override(0.7f);
+            bloom.intensity.Override(0.82f);
+            bloom.threshold.Override(0.82f);
+            bloom.scatter.Override(0.72f);
             var tone = Get<Tonemapping>();
             tone.mode.Override(TonemappingMode.ACES);
             var color = Get<ColorAdjustments>();
-            color.postExposure.Override(0.2f);
-            color.contrast.Override(15f);
-            color.saturation.Override(-8f);
+            color.postExposure.Override(0.55f);
+            color.contrast.Override(14f);
+            color.saturation.Override(-9f);
             var wb = Get<WhiteBalance>();
-            wb.temperature.Override(-10f);
+            wb.temperature.Override(-14f);
             var vig = Get<Vignette>();
-            vig.intensity.Override(0.25f);
-            vig.smoothness.Override(0.45f);
+            vig.intensity.Override(0.19f);
+            vig.smoothness.Override(0.52f);
             var grain = Get<FilmGrain>();
             grain.type.Override(FilmGrainLookup.Thin1);
-            grain.intensity.Override(0.2f);
+            grain.intensity.Override(0.16f);
             EditorUtility.SetDirty(profile);
             AssetDatabase.SaveAssets();
 
-            Volume vol = null;
-            foreach (var v in Object.FindObjectsByType<Volume>())
-                if (v.isGlobal) { vol = v; break; }
-            if (vol == null)
-            {
-                var go = new GameObject("NightVolume");
-                go.transform.SetParent(root, false);
-                vol = go.AddComponent<Volume>();
-                vol.isGlobal = true;
-            }
+            // Own exactly one active global volume. Reusing the template scene's first
+            // global volume made edit/play transitions dependent on discovery order and
+            // could briefly show the scene with a completely different exposure.
+            foreach (var existing in Object.FindObjectsByType<Volume>())
+                if (existing.isGlobal) existing.enabled = false;
+            var go = new GameObject("NightVolume");
+            go.transform.SetParent(root, false);
+            var vol = go.AddComponent<Volume>();
+            vol.isGlobal = true;
+            vol.priority = 100f;
+            vol.weight = 1f;
+            vol.blendDistance = 0f;
             vol.sharedProfile = profile;
         }
 
