@@ -42,7 +42,8 @@ Material:
   - _BUILTIN_SURFACE_TYPE_TRANSPARENT
   - _RECEIVE_SHADOWS_OFF
   - _SURFACE_TYPE_TRANSPARENT
-  m_InvalidKeywords: []
+  m_InvalidKeywords:
+  - _EMISSION
   m_LightmapFlags: 2
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 1
@@ -195,7 +196,7 @@ Material:
     - _Color: {r: 0.8544474, g: 0.8544474, b: 0.8544474, a: 1}
     - _ColorAddSubDiff: {r: 0, g: 0, b: 0, a: 0}
     - _EmissionColor: {r: 1.6837997, g: 0.73922914, b: 0, a: 1}
-    - _Emission_Color: {r: 0, g: 0, b: 0, a: 1}
+    - _Emission_Color: {r: 0, g: 0, b: 0, a: 0}
     - _SoftParticleFadeParams: {r: 0, g: 3.3333333, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

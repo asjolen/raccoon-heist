@@ -18,8 +18,10 @@ Tone: chaotic, physical, clip-worthy. Failure is funnier than success.
    entry. Entries are a menu of tradeoffs (speed / noise / what fits through):
    the floor vent (quiet, slow, small loot), the centered front door (openable from
    either side, but opening it from the street trips the alarm), the pet flap (opens from inside only),
-   a creaky back window into the storage room (unlock from inside first), and a
-   roof skylight (one-way drop in — never an exit).
+   a creaky back window into the storage room (smash loudly from outside; a later
+   quiet unlock from inside preserves the stealth tradeoff), a bolted
+   rear storage grate (crouch-only and LOUD when broken), and a roof skylight
+   (one-way drop in — never an exit).
 2. A randomized **shopping list** demands specific items (some fragile, some heavy
    two-raccoon carries).
 3. Players sneak, climb shelves, and carry physics-based loot to the ONE scoring
@@ -85,6 +87,11 @@ Tone: chaotic, physical, clip-worthy. Failure is funnier than success.
 - Vent entry at floor level near the front-east corner; counter + register near
   the front; Harold's cot in the back room. The **scoring hole** is in the back
   room's floorboards near the cot (raccoon-sized — divable, loudly).
+- Three generated crawl routes stay below standing height: the quiet east floor
+  duct, an always-open maintenance bypass between the main shop and storage, and
+  the rear-alley storage duct capped by a breakable POLYGON grate. Breaking the
+  rear grate plays localized metal audio and emits a radius-based loud-noise event.
+  None of these routes may enter Harold's room or bypass its single doorway.
 - The **playable** outside stays small: one street face (bright, exposed,
   streetlamp), an east side passage with the vent, and a back alley (dark,
   cluttered: dumpster, pallets, bins). The **den** is in the alley (hole under a

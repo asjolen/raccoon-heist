@@ -40,8 +40,9 @@ Material:
   m_ValidKeywords:
   - _ALPHATEST_ON
   m_InvalidKeywords:
+  - _EMISSION
   - _NORMALMAP
-  m_LightmapFlags: 0
+  m_LightmapFlags: 2
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
   m_CustomRenderQueue: 2000
@@ -114,7 +115,7 @@ Material:
     - _DetailNormalMapScale: 1
     - _DstBlend: 0
     - _DstBlendAlpha: 0
-    - _Enable_Emission: 0
+    - _Enable_Emission: 1
     - _GlossMapScale: 1
     - _Glossiness: 0.2
     - _GlossyReflections: 1

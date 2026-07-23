@@ -17,12 +17,22 @@ namespace RaccoonHeist.World
         [SerializeField] float beaconDegreesPerSecond = 250f;
         [SerializeField] bool counterRotateBeacons = true;
 
+        [Header("Interior coverage")]
+        [SerializeField] Bounds[] interiorZones = System.Array.Empty<Bounds>();
+        [SerializeField, Range(0f, 1f)] float interiorSpatialBlend;
+        [SerializeField, Range(0f, 1f)] float exteriorSpatialBlend = 1f;
+        [SerializeField, Range(0f, 1f)] float interiorVolume = 0.62f;
+        [SerializeField, Range(0f, 1f)] float exteriorVolume = 0.72f;
+        [SerializeField, Min(0.05f)] float mixTransitionSeconds = 0.35f;
+
         bool alarmActive;
         bool hasTriggered;
+        Transform listener;
 
         public bool IsAlarmActive => alarmActive;
+        public bool IsInteriorPosition(Vector3 worldPosition) => IsInside(worldPosition);
 
-        public void Configure(HingedDoor door, AudioSource source, Transform[] rotors)
+        public void Configure(HingedDoor door, AudioSource source, Transform[] rotors, Bounds[] zones)
         {
             if (isActiveAndEnabled && storefrontDoor != null)
                 storefrontDoor.OpenedFromStreet -= TriggerAlarm;
@@ -30,6 +40,7 @@ namespace RaccoonHeist.World
             storefrontDoor = door;
             alarmSource = source;
             beaconRotors = rotors;
+            interiorZones = zones ?? System.Array.Empty<Bounds>();
 
             if (isActiveAndEnabled && storefrontDoor != null)
                 storefrontDoor.OpenedFromStreet += TriggerAlarm;
@@ -51,7 +62,10 @@ namespace RaccoonHeist.World
 
         void Update()
         {
-            if (!alarmActive || beaconRotors == null) return;
+            if (!alarmActive) return;
+            UpdateAlarmMix(false);
+            if (beaconRotors == null) return;
+
             float rotation = beaconDegreesPerSecond * Time.deltaTime;
             for (int i = 0; i < beaconRotors.Length; i++)
             {
@@ -68,6 +82,8 @@ namespace RaccoonHeist.World
             hasTriggered = true;
             alarmActive = true;
             SetBeaconState(true);
+            ResolveListener();
+            UpdateAlarmMix(true);
             if (alarmSource != null && alarmSource.clip != null && !alarmSource.isPlaying)
                 alarmSource.Play();
         }
@@ -91,6 +107,48 @@ namespace RaccoonHeist.World
             foreach (var rotor in beaconRotors)
                 if (rotor != null)
                     rotor.gameObject.SetActive(active);
+        }
+
+        void UpdateAlarmMix(bool immediate)
+        {
+            if (alarmSource == null) return;
+            if (listener == null) ResolveListener();
+
+            bool inside = listener != null && IsInside(listener.position);
+            float targetBlend = inside ? interiorSpatialBlend : exteriorSpatialBlend;
+            float targetVolume = inside ? interiorVolume : exteriorVolume;
+            if (immediate)
+            {
+                alarmSource.spatialBlend = targetBlend;
+                alarmSource.volume = targetVolume;
+                return;
+            }
+
+            float step = Time.unscaledDeltaTime / Mathf.Max(0.05f, mixTransitionSeconds);
+            alarmSource.spatialBlend = Mathf.MoveTowards(alarmSource.spatialBlend, targetBlend, step);
+            alarmSource.volume = Mathf.MoveTowards(alarmSource.volume, targetVolume, step);
+        }
+
+        void ResolveListener()
+        {
+            var activeListener = FindFirstObjectByType<AudioListener>();
+            listener = activeListener != null ? activeListener.transform : null;
+        }
+
+        bool IsInside(Vector3 worldPosition)
+        {
+            foreach (var zone in interiorZones)
+                if (zone.Contains(worldPosition)) return true;
+            return false;
+        }
+
+        void OnValidate()
+        {
+            interiorSpatialBlend = Mathf.Clamp01(interiorSpatialBlend);
+            exteriorSpatialBlend = Mathf.Clamp01(exteriorSpatialBlend);
+            interiorVolume = Mathf.Clamp01(interiorVolume);
+            exteriorVolume = Mathf.Clamp01(exteriorVolume);
+            mixTransitionSeconds = Mathf.Max(0.05f, mixTransitionSeconds);
         }
     }
 }
